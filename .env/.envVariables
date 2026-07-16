@@ -1,0 +1,6 @@
+# Environment variables for the wfci pipeline.
+# The package is pure-Python (numpy/scipy/tifffile/matplotlib); no secrets or
+# service credentials are required. Add project-specific variables below.
+
+# Absolute path to the sample dataset used by the parity test.
+WFCI_SAMPLE_DATA=./data

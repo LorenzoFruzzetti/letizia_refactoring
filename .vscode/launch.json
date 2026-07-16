@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run pipeline (run_pipeline.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_pipeline.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env/.envVariables",
+      "python": "C:\\Users\\loren\\miniconda3\\envs\\letizia\\python.exe",
+      "purpose": ["debug-in-terminal"]
+    },
+    {
+      "name": "Run example (examples/run_example.py)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/examples/run_example.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "envFile": "${workspaceFolder}/.env/.envVariables",
+      "python": "C:\\Users\\loren\\miniconda3\\envs\\letizia\\python.exe"
+    },
+    {
+      "name": "Debug current file",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "python": "C:\\Users\\loren\\miniconda3\\envs\\letizia\\python.exe",
+      "purpose": ["debug-in-terminal"]
+    }
+  ]
+}

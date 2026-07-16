@@ -1,0 +1,35 @@
+%% soggetti tutti concatenati
+SUBJECTS_ALL = cat(3,mean_R_PV_F_MACCHI_DX_day4,mean_R_PV_F_MACCHI_NM_day4,mean_R_PV_M_MACCHI_DX_day4,mean_R_PV_M_MACCHI_DXSX_day4,mean_R_PV_M_MACCHI_NM_day4,mean_R_CR1F_NM_day4,mean_R_CR1M_DX_day4,mean_R_CR1M_DXSX_day4,mean_R_CR1M_NM_day4,mean_R_CR1M_SX_day4);
+
+%% medie nei gruppi
+
+mean_SANI = mean(cat(3,mean_R_PV_F_MACCHI_DX_day4,mean_R_PV_F_MACCHI_NM_day4,mean_R_PV_M_MACCHI_DX_day4,mean_R_PV_M_MACCHI_DXSX_day4,mean_R_PV_M_MACCHI_NM_day4),3);
+mean_PD = mean(cat(3,mean_R_CR1F_NM_day4,mean_R_CR1M_DX_day4,mean_R_CR1M_DXSX_day4,mean_R_CR1M_NM_day4,mean_R_CR1M_SX_day4),3);
+
+%% media all'interno del gruppo
+
+DIFF = mean_SANI-mean_PD;
+
+%% figura matrice di correlazione
+
+figure;
+imagesc(DIFF)
+xticks(1:1:22)
+yticks(1:1:22)
+xtickangle(90)
+xticklabels({'MOs-a_L','MOs-p_L','MOp-a_L','MOp-p_L','SSp-bfd_L','SSp-tr_L','SSp-fL_L','SSp-hl_L','RSP_L','VISa_L','VISp_L','MOs-a_R','MOs-p_R','MOp-a_R','MOp-p_R','SSp-bfd_R','SSp-tr_R','SSp-fL_R','SSp-hl_R','RSP_R','VISa_R','VISp_R'})
+yticklabels({'MOs-a_L','MOs-p_L','MOp-a_L','MOp-p_L','SSp-bfd_L','SSp-tr_L','SSp-fL_L','SSp-hl_L','RSP_L','VISa_L','VISp_L','MOs-a_R','MOs-p_R','MOp-a_R','MOp-p_R','SSp-bfd_R','SSp-tr_R','SSp-fL_R','SSp-hl_R','RSP_R','VISa_R','VISp_R'})
+
+%% Maschi
+
+SUBJECT_ALL_M = cat(3,mean_R_PV_M_MACCHI_DX_day4,mean_R_PV_M_MACCHI_DXSX_day4,mean_R_PV_M_MACCHI_NM_day4,mean_R_CR1M_DX_day4,mean_R_CR1M_DXSX_day4,mean_R_CR1M_NM_day4,mean_R_CR1M_SX_day4);
+mean_SANI_M = mean(cat(3,mean_R_PV_M_MACCHI_DX_day4,mean_R_PV_M_MACCHI_DXSX_day4,mean_R_PV_M_MACCHI_NM_day4),3);
+mean_PD_M = mean(cat(3,mean_R_CR1M_DX_day4,mean_R_CR1M_DXSX_day4,mean_R_CR1M_NM_day4,mean_R_CR1M_SX_day4),3);
+DIFF_M = mean_SANI_M-mean_PD_M;
+
+%% Femmine
+
+SUBJECT_ALL_F = cat(3,mean_R_PV_F_MACCHI_DX_day4,mean_R_PV_F_MACCHI_NM_day4,mean_R_CR1F_NM_day4);
+mean_SANI_F = mean(cat(3,mean_R_CR1F_NM_day4),3);
+mean_PD_F = mean(cat(3,mean_R_PV_F_MACCHI_DX_day4,mean_R_PV_F_MACCHI_NM_day4),3);
+DIFF_F = mean_SANI_F-mean_PD_F;

@@ -1,0 +1,47 @@
+%% lettura del file 
+matfiles = (dir(fullfile('/home/firenze/Desktop/Ts65Dn/GSR/10T2_L_WT/emo')));
+nfiles = length(matfiles);
+sizet=0;
+
+K=1
+
+for i= 3:2:size(matfiles,1)
+name=strcat(matfiles(i).folder,{'/'},matfiles(i).name)
+NAME=name{1,1};
+%copyfile(NAME, '~/temp.tif')
+%NAME =  '~/temp.tif';
+tiff_info = imfinfo(NAME);
+sizet=0;
+out = [];
+%%% ricorda che se pesa piÙ di 4gb non lo legge!!
+for ii = 1:size(tiff_info, 1)
+out(:,:,sizet + ii) = imread(NAME, ii);
+end
+t_FILE_emo = imresize(out,0.5,'box');
+sizet =  sizet + size(tiff_info, 1);
+ii
+name=strcat(matfiles(i).folder,{'/'},matfiles(i+1).name)
+NAME=name{1,1};
+%copyfile(NAME, '~/temp.tif')
+%NAME =  '~/temp.tif';
+tiff_info = imfinfo(NAME);
+sizet=0;
+out = [];
+%%% ricorda che se pesa piÙ di 4gb non lo legge!!
+for ii = 1:size(tiff_info, 1)
+out(:,:,sizet + ii) = imread(NAME, ii);
+end
+t_FILE_gCaMP = imresize(out,0.5,'box');
+sizet =  sizet + size(tiff_info, 1);
+
+MIf = mean(t_FILE_gCaMP,3);
+MIr = mean(t_FILE_emo,3);
+
+If2 = bsxfun(@rdivide, t_FILE_gCaMP, MIf);
+Ir2 = bsxfun(@rdivide, t_FILE_emo, MIr);
+t_temp = If2./Ir2;
+
+%t_TEMP_GCaMPonly(:,:,:,K) = (If2-1)*100;
+t_TEMP(:,:,:,K) = (((t_temp-1)*100)); % ottieni il DF/F in %;
+K=K+1;
+end

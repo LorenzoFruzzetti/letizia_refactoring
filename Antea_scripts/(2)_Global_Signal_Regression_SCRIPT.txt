@@ -1,0 +1,44 @@
+%CARICARE MASCHERA! 
+uiopen('/home/firenze/Desktop/Ts65Dn/FOV_bl/1T_R_WT_BL.tif',1)
+
+%%%%%%%%%%%%%%%%%
+for i=1:size(t_TEMP,4)
+    TEMP=t_TEMP(:,:,:,i);
+    temp_resized = imresize(TEMP,0.5,'box');
+t_TEMP_resized(:,:,:,i) = temp_resized;
+end
+
+Mask_resized = imresize(Mask,0.5,'box');
+
+for i=1:size(Mask_resized,1)
+    for j=1:size(Mask_resized,2)
+if Mask_resized(i,j)==0
+    t_TEMP_resized(i,j,:,:)=NaN;
+end
+    end
+end
+
+
+for i=1:size(t_TEMP_resized,4)
+    data=t_TEMP_resized(:,:,:,i);
+global_signal = squeeze(nanmean(nanmean(data,1),2));
+data_regressed = zeros(size(data(:,:,:,1)));
+for row=1:size(data,1)
+    for col = 1:size(data,2)
+if ~isnan(data(row,col,:))
+    pixel_signal =squeeze(data(row,col,:));
+    %if ~any(isnan(pixel_signal))
+mdl=fitlm(global_signal,pixel_signal);
+global_component = mdl.Coefficients.Estimate(2)*global_signal+mdl.Coefficients.Estimate(1);
+data_regressed(row,col,:)=pixel_signal-global_component;
+    %else
+    %data_regressed(row,col,:)=NaN;
+else
+data_regressed(row,col,:)=NaN;
+end
+    end
+end
+t_TEMP_regressed(:,:,:,i)=data_regressed;
+i=i
+end
+

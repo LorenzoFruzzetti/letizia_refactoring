@@ -1,0 +1,90 @@
+TEMP=[];
+img_av = [];
+
+% CAMBIARE QUESTE DUE LINEE
+for i=1:size(t_TEMP_regressed,4)
+img_av = t_TEMP_regressed(:,:,:,i);
+%%%%%
+
+
+BFD_bis = img_av(y_1+17 : y_1+22, x_2+37 : x_2+42, :);
+BFDR = nanmean(nanmean(BFD_bis,1),2);
+BFDR = BFDR(:,:);
+BCL_bis = img_av(y_1+17 : y_1+22, x_2-42 : x_2-37, :);
+BFDL = nanmean(nanmean(BCL_bis,1),2);
+BFDL = BFDL(:,:);
+RSR_bis = img_av(y_1+25 : y_1+30, x_2+4 : x_2+9, :);
+RSR_alta = nanmean(nanmean(RSR_bis,1),2);
+RSR_alta = RSR_alta(:,:);
+RSL_bis = img_av(y_1+25 : y_1+30, x_2-9 : x_2-4, :);
+RSL_alta = nanmean(nanmean(RSL_bis,1),2);
+RSL_alta = RSL_alta(:,:);
+V1R_bis = img_av(y_1+41 : y_1+46, x_2+25 : x_2+30, :);
+V1R = nanmean(nanmean(V1R_bis,1),2);
+V1R = V1R(:,:);
+V1L_bis = img_av(y_1+41 : y_1+46, x_2-30 : x_2-25, :);
+V1L = nanmean(nanmean(V1L_bis,1),2);
+V1L = V1L(:,:);
+V1aR_bis = img_av(y_1+27 : y_1+32, x_2+23 : x_2+28, :);
+V1aR = nanmean(nanmean(V1aR_bis,1),2);
+V1aR = V1aR(:,:);
+V1aL_bis = img_av(y_1+27 : y_1+32, x_2-28 : x_2-23, :);
+V1aL = nanmean(nanmean(V1aL_bis,1),2);
+V1aL = V1aL(:,:);
+M1R_bis = img_av(y_1-17 : y_1-12, x_2+27 : x_2+32, :);
+M1R_alta = nanmean(nanmean(M1R_bis,1),2);
+M1R_alta = M1R_alta(:,:);
+M1L_bis = img_av(y_1-17 : y_1-12, x_2-32 : x_2-27, :);
+M1L_alta = nanmean(nanmean(M1L_bis,1),2);
+M1L_alta = M1L_alta(:,:);
+M1R_bis_2 = img_av(y_1-6 : y_1-1, x_2+15 : x_2+20, :);
+M1R_bassa = nanmean(nanmean(M1R_bis_2,1),2);
+M1R_bassa = M1R_bassa(:,:);
+M1L_bis_2 = img_av(y_1-6 : y_1-1, x_2-20 : x_2-15, :);
+M1L_bassa = nanmean(nanmean(M1L_bis_2,1),2);
+M1L_bassa = M1L_bassa(:,:);
+M2R_bis_2 = img_av(y_1-28 : y_1-23, x_2+10 : x_2+15, :);
+M2R_alta = nanmean(nanmean(M2R_bis_2,1),2);
+M2R_alta = M2R_alta(:,:);
+M2L_bis = img_av(y_1-28 : y_1-23, x_2-15 : x_2-10, :);
+M2L_alta = nanmean(nanmean(M2L_bis,1),2);
+M2L_alta = M2L_alta(:,:);
+M2R_bis_2 = img_av(y_1-10 : y_1-5, x_2+5 : x_2+10, :);
+M2R_bassa = nanmean(nanmean(M2R_bis_2,1),2);
+M2R_bassa = M2R_bassa(:,:);
+M2L_bis = img_av(y_1-10 : y_1-5, x_2-10 : x_2-5, :);
+M2L_bassa = nanmean(nanmean(M2L_bis,1),2);
+M2L_bassa = M2L_bassa(:,:);
+FLR_bis_2 = img_av(y_1-0 : y_1+5, x_2+27 : x_2+32, :);
+FLR = nanmean(nanmean(FLR_bis_2,1),2);
+FLR = FLR(:,:);
+FLL_bis_2 = img_av(y_1-0 : y_1+5, x_2-32 : x_2-27, :);
+FLL = nanmean(nanmean(FLL_bis_2,1),2);
+FLL = FLL(:,:);
+TrR_bis_2 = img_av(y_1+18 : y_1+23, x_2+21 : x_2+26, :);
+TrR = nanmean(nanmean(TrR_bis_2,1),2);
+TrR = TrR(:,:);
+TrL_bis_2 = img_av(y_1+18 : y_1+23, x_2-26 : x_2-21, :);
+TrL = nanmean(nanmean(TrL_bis_2,1),2);
+TrL = TrL(:,:);
+HLR_bis_2 = img_av(y_1+7 : y_1+12, x_2+17 : x_2+22, :);
+HLR = nanmean(nanmean(HLR_bis_2,1),2);
+HLR = HLR(:,:);
+HLL_bis_2 = img_av(y_1+7 : y_1+12, x_2-22 : x_2-17, :);
+HLL = nanmean(nanmean(HLL_bis_2,1),2);
+HLL = HLL(:,:);regioni_R = cat(2,M2R_alta',M2R_bassa',M1R_alta',M1R_bassa',BFDR',TrR',FLR',HLR',RSR_alta',V1aR',V1R');
+regioni_L = cat(2,M2L_alta',M2L_bassa',M1L_alta',M1L_bassa',BFDL',TrL',FLL',HLL',RSL_alta',V1aL',V1L');
+ALL = cat(2,regioni_L,regioni_R);
+TEMP(:,:,i) = ALL;
+end
+%%
+
+R=[];
+for i=1:size(TEMP,3)
+R(:,:,i)=corr(TEMP(:,:,i),TEMP(:,:,i));
+end
+
+% save these files as CORR_ANIMAL_XDPL
+R_regressed_ANIMAL_XDPL = R; % valore del pearson coefficient sulla singola traccia  
+mean_R_regressed_ANIMAL_XDPL = mean(R,3); % media dei valori di correlazione della singola matrice di un animale di un giorno
+TEMP_regressed_ANIMAL_XDPL = TEMP; % attività media delle singole ROI (22 regioni) per tutti i frame

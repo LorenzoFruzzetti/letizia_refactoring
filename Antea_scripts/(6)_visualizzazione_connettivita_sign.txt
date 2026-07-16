@@ -1,0 +1,247 @@
+%% STATISTICS
+% upload ALL_XDPL, run NBS and do NOT close it
+
+%% HYPER
+
+global nbs;
+adj=nbs.NBS.con_mat{1}+nbs.NBS.con_mat{1};
+adj_1 = full(adj);
+
+ %carica matrix diff DIFF = [];
+
+for i=1:size(adj_1,1)
+for j=1:size(adj_1,2)
+if adj_1(i,j) > 0
+matrix_onlysignHYPER(i,j) = DIFF(i,j);
+else
+matrix_onlysignHYPER(i,j) = 0;
+end
+end
+end
+
+max_value = max(matrix_onlysignHYPER(:));
+min_value = min(matrix_onlysignHYPER(:));
+
+
+connectivity_matrixHYPER = triu(matrix_onlysignHYPER) + triu(matrix_onlysignHYPER, 1)';
+graph_HYPER = graph(connectivity_matrixHYPER)
+degrees = (connectivity_matrixHYPER);
+
+normalized_degree = degrees / max(degrees); % Normalizza i gradi dei nodi nel range 0-1
+marker_scale = 10; % Scala per regolare la dimensione dei marcatori dei nodi
+node_sizes = normalized_degree * marker_scale;
+node_sizes = node_sizes*80;
+node_sizes = max(node_sizes, 35); % Imposta un valore minimo per evitare dimensioni nulle
+%carica node_positions che sono MNI ! le posizioni!
+%node_positions = flipud(node_positions)
+
+temp = graph_HYPER.Edges;
+width = abs(table2array(temp));
+edge_indices = findedge(graph_HYPER, width(:, 1), width(:, 2));
+edge_width = ones(numedges(graph_HYPER), 1);
+%edge_width(edge_indices) = connectivity_matrix(edge_indices, 3);
+%plot(width(1,1), width(1,2), 'LineWidth', width(1,3));
+num_nodes = size(matrix_onlysignHYPER, 1);
+load('C:\Users\VivoBook\Documents\MATLAB Path\NBS1.2\SchizophreniaExample\PD\Nodeposition_PD\nodeposition_PD.mat')
+
+for i=1:size(DIFF,1)
+VALUE(i,1) = nanmean(DIFF(i,:),2);
+VALUE_GRAD = VALUE/min(VALUE);
+end
+
+for i = 1:size(VALUE_GRAD,1)
+    if VALUE_GRAD(i) > 0.6
+    node_colors_2(i,:) = [0.78,0,0];
+elseif VALUE_GRAD(i) > 0.3 & VALUE_GRAD(i) < 0.6
+    node_colors_2(i,:) = [0.9,0.3,0.3];
+elseif VALUE_GRAD(i) > 0 & VALUE_GRAD(i) < 0.3
+    node_colors_2(i,:) = [1,0.75,0.75];
+    elseif VALUE_GRAD(i) < -0.4
+    node_colors_2(i,:) = [0,0.45,0.75];
+elseif VALUE_GRAD(i) > -0.4 & VALUE_GRAD(i) < -0.2
+    node_colors_2(i,:) = [0.45,0.68,0.89];
+elseif VALUE_GRAD(i) > -0.2 & VALUE_GRAD(i) < 0
+    node_colors_2(i,:) = [0.75,0.83,0.97];
+end
+end
+
+figure;
+gplot(connectivity_matrixHYPER, node_positions);  % Collega i nodi con gli archi
+hold on;
+%scatter(node_positions(:, 1), node_positions(:, 2), node_sizes, node_colors, 'filled','MarkerEdgeColor', 'none');  % Disegna i nodi
+scatter(node_positions(:, 1), node_positions(:, 2), node_sizes, node_colors_2, 'filled','MarkerEdgeColor', 'none');  % Disegna i nodi
+MATRIX = abs(connectivity_matrixHYPER);
+MATRIX=MATRIX*15;
+edges = find(MATRIX);  % Trova gli indici degli archi
+[righe, colonne] = find(MATRIX);  % Trova gli indici di riga e colonna degli archi
+for i = 1:numel(righe)
+u = righe(i);  % Nodo di partenza dell'arco
+v = colonne(i);  % Nodo di arrivo dell'arco
+if MATRIX(u,v) > 0.7
+    COLOR_EDGE(i,:) = [0.78,0,0];
+elseif MATRIX(u,v) < 0.7 & MATRIX(u,v) > 0.2
+    COLOR_EDGE(i,:) = [0.9,0.3,0.3];
+elseif MATRIX(u,v) < 0.2 
+    COLOR_EDGE(i,:) = [1,0.75,0.75];
+end
+end
+for i = 1:numel(righe)
+u = righe(i);  % Nodo di partenza dell'arco
+v = colonne(i);  % Nodo di arrivo dell'arco
+%line([node_positions(u, 1), node_positions(v, 1)], [node_positions(u, 2), node_positions(v, 2)],'color', [0 0.45 0.74] , 'LineWidth', MATRIX(u, v));
+line([node_positions(u, 1), node_positions(v, 1)], [node_positions(u, 2), node_positions(v, 2)],'color', COLOR_EDGE(i,:), 'LineWidth', MATRIX(u, v));
+end
+MATRIX = abs(matrix_onlysignHYPER)
+ % Rimuove la visualizzazione dell'asse x e y
+axis off;
+
+axis on;
+
+
+%% HYPO
+global nbs;
+adj=nbs.NBS.con_mat{1}+nbs.NBS.con_mat{1};
+adj_1 = full(adj);
+
+% carica la matrice di differenza DIFF 
+
+for i=1:size(adj_1,1)
+for j=1:size(adj_1,2)
+if adj_1(i,j) > 0
+matrix_onlysign_HYPO(i,j) = DIFF(i,j);
+else
+matrix_onlysign_HYPO(i,j) = 0;
+end
+end
+end
+
+max_value = max(matrix_onlysign_HYPO(:));
+min_value = min(matrix_onlysign_HYPO(:));
+
+connectivity_matrix_HYPO = triu(matrix_onlysign_HYPO) + triu(matrix_onlysign_HYPO, 1)';
+graph_HYPO = graph(connectivity_matrix_HYPO);
+degrees = (connectivity_matrix_HYPO);
+
+normalized_degree = degrees / max(degrees); % Normalizza i gradi dei nodi nel range 0-1
+marker_scale = 10; % Scala per regolare la dimensione dei marcatori dei nodi
+node_sizes = normalized_degree * marker_scale;
+node_sizes = node_sizes*50;
+node_sizes = max(node_sizes, 35); % Imposta un valore minimo per evitare dimensioni nulle
+%carica node_positions che sono MNI ! le posizioni!
+%node_positions = flipud(node_positions)
+
+temp = graph_HYPO.Edges;
+width = abs(table2array(temp));
+edge_indices = findedge(graph_HYPO, width(:, 1), width(:, 2));
+edge_width = ones(numedges(graph_HYPO), 1);
+%edge_width(edge_indices) = connectivity_matrix(edge_indices, 3);
+%plot(width(1,1), width(1,2), 'LineWidth', width(1,3));
+num_nodes = size(matrix_onlysign_HYPO, 1);
+load('C:\Users\VivoBook\Documents\MATLAB Path\NBS1.2\SchizophreniaExample\PD\Nodeposition_PD\nodeposition_PD.mat')
+%load('C:\Users\monta\Desktop\matlab path\NBS1.2\SchizophreniaExample\nodeposition_TRUE.mat')
+%load('C:\Users\monta\Desktop\matlab path\NBS1.2\SchizophreniaExample\node_colors.mat')
+
+
+for i=1:size(DIFF,1)
+VALUE(i,1) = nanmean(DIFF(i,:),2);
+VALUE_GRAD = VALUE/max(VALUE);
+end
+
+for i = 1:size(VALUE_GRAD,1)
+if VALUE_GRAD(i) > 0.6
+node_colors_2(i,:) = [0,0.45,0.75];
+elseif VALUE_GRAD(i) > 0.3 & VALUE_GRAD(i) < 0.6
+node_colors_2(i,:) = [0.45,0.68,0.89];
+elseif VALUE_GRAD(i) > 0 & VALUE_GRAD(i) < 0.3
+node_colors_2(i,:) = [0.75,0.83,0.97];
+elseif VALUE_GRAD(i) < -0.4
+node_colors_2(i,:) = [0.78,0,0];
+elseif VALUE_GRAD(i) > -0.4 & VALUE_GRAD(i) < -0.2
+node_colors_2(i,:) = [0.9,0.3,0.3];
+elseif VALUE_GRAD(i) > -0.2 & VALUE_GRAD(i) < 0
+node_colors_2(i,:) = [1,0.75,0.75];
+end
+end
+
+
+figure;
+gplot(connectivity_matrix_HYPO, node_positions);  % Collega i nodi con gli archi
+hold on;
+%scatter(node_positions(:, 1), node_positions(:, 2), node_sizes, node_colors, 'filled','MarkerEdgeColor', 'none');  % Disegna i nodi
+scatter(node_positions(:, 1), node_positions(:, 2), node_sizes, node_colors_2, 'filled','MarkerEdgeColor', 'none');  % Disegna i nodi
+MATRIX = abs(connectivity_matrix_HYPO);
+MATRIX=MATRIX*15;
+edges = find(MATRIX);  % Trova gli indici degli archi
+[righe, colonne] = find(MATRIX);  % Trova gli indici di riga e colonna degli archi
+for i = 1:numel(righe)
+u = righe(i);  % Nodo di partenza dell'arco
+v = colonne(i);  % Nodo di arrivo dell'arco
+if MATRIX(u,v) > 1.4
+    COLOR_EDGE(i,:) = [0,0.45,0.75];
+elseif MATRIX(u,v) > 0.6 & MATRIX(u,v) < 1.4
+    COLOR_EDGE(i,:) = [0.45,0.68,0.89];
+elseif MATRIX(u,v) < 0.6
+    COLOR_EDGE(i,:) = [0.75,0.83,0.97];
+end
+end
+
+for i = 1:numel(righe)
+u = righe(i);  % Nodo di partenza dell'arco
+v = colonne(i);  % Nodo di arrivo dell'arco
+%line([node_positions(u, 1), node_positions(v, 1)], [node_positions(u, 2), node_positions(v, 2)],'color', [0 0.45 0.74] , 'LineWidth', MATRIX(u, v));
+line([node_positions(u, 1), node_positions(v, 1)], [node_positions(u, 2), node_positions(v, 2)],'color', COLOR_EDGE(i,:) , 'LineWidth', MATRIX(u, v));
+end
+MATRIX = abs(matrix_onlysign_HYPO)
+for i=1:size(DIFF,1)
+VALUE(i,1) = nanmean(DIFF(i,:),2);
+end
+axis off; % Rimuove la visualizzazione dell'asse x e y
+
+%% HYPER barplot
+
+for i=1:size(connectivity_matrixHYPER,1)
+for j=1:size(connectivity_matrixHYPER,2)
+if connectivity_matrixHYPER(i,j) < 0
+SIGN_NEG(i,j) = +1;
+else
+SIGN_NEG(i,j) = 0;
+end
+end
+end
+NEG_sums = sum(SIGN_NEG, 2);
+figure;
+barh(NEG_sums)
+set(gca, 'YDir', 'reverse');
+yticks(1:1:22)
+yticklabels({'MOs-a_L','MOs-p_L','MOp-a_L','MOp-p_L','SSp-bfd_L','SSp-tr_L','SSp-fl_L','SSp-hl_L','RSP_L','VISa_L','VISp_L','MOs-a_R','MOs-p_R','MOp-a_R','MOp-p_R','SSp-bfd_R','SSp-tr_R','SSp-fL_R','SSp-hl_R','RSP_R','VISa_R','VISp_R'})
+xlim([0 15])
+hold on
+
+%% HYPO barplot
+
+for i=1:size(connectivity_matrix_HYPO,1)
+for j=1:size(connectivity_matrix_HYPO,2)
+if connectivity_matrix_HYPO(i,j) > 0
+SIGN_NEG(i,j) = +1;
+else
+SIGN_NEG(i,j) = 0;
+end
+end
+end
+for i=1:size(connectivity_matrix_HYPO,1)
+for j=1:size(connectivity_matrix_HYPO,2)
+if connectivity_matrix_HYPO(i,j) > 0
+SIGN_POS(i,j) = -1;
+else
+SIGN_POS(i,j) = 0;
+end
+end
+end
+POS_sums = sum(SIGN_POS, 2);
+figure;
+barh(POS_sums)
+set(gca, 'YDir', 'reverse');
+yticks(1:1:22)
+yticklabels({'MOs-a_L','MOs-p_L','MOp-a_L','MOp-p_L','SSp-bfd_L','SSp-tr_L','SSp-fL_L','SSp-hl_L','RSP_L','VISa_L','VISp_L','MOs-a_R','MOs-p_R','MOp-a_R','MOp-p_R','SSp-bfd_R','SSp-tr_R','SSp-fL_R','SSp-hl_R','RSP_R','VISa_R','VISp_R'})
+xlim([-15 15])
+
