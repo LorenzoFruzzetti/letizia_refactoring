@@ -1,22 +1,41 @@
-# Wide-field Calcium Imaging — Cerebellar ROI Functional Connectivity (`wfci`)
+# Wide-field Calcium Imaging — ROI Functional Connectivity (`wfci`)
 
 Python package for analysing dual-channel wide-field imaging data (GCaMP
-fluorescence + hemodynamic reflectance) acquired in mouse cerebellum. It
-performs hemodynamic correction (ΔF/F), ROI placement relative to Bregma, and
-region-to-region functional-connectivity analysis, for both **resting-state**
-and **stimulated** (e.g. optogenetic) recordings.
+fluorescence + hemodynamic reflectance) acquired in mouse brain. It performs
+hemodynamic correction (ΔF/F), ROI placement relative to Bregma, optional brain
+masking and global signal regression, and region-to-region
+functional-connectivity analysis.
 
-This is a Python port of the original MATLAB pipeline (now under
-[`matlab/`](matlab/)). The port is **numerically validated against MATLAB** to
-machine precision — see [Validation against MATLAB](#validation-against-matlab).
+It runs **two pipelines**, selected with `--profile`:
 
-> Canonical technical map of the repository: **[REFERENCE.md](REFERENCE.md)**.
+| Profile | Regions | Stages | MATLAB origin |
+|---------|---------|--------|---------------|
+| `cerebellar_rs` | 4 cerebellar | correction → ROI → connectivity | [`matlab/`](matlab/) resting-state |
+| `cerebellar_stim` | 4 cerebellar | correction → ROI → connectivity | [`matlab/`](matlab/) stimulated |
+| `cortical_gsr` | 22 cortical | correction → **mask** → **GSR** → ROI → connectivity | [`Antea_scripts/`](Antea_scripts/) |
 
-The four ROIs analysed are the left/right **cerebellar vermis** (`Verme_L/R`)
-and the left/right **lateral hemispheres** (`Laterale_L/R`). Background:
-Falcicchia et al., "Microglial extracellular vesicles induce Alzheimer's
-disease-like changes", *Brain Communications* 2023 (open access) — not
-redistributed here; see `.gitignore`.
+The cerebellar path is a port of [`matlab/`](matlab/) and is **numerically
+validated against MATLAB to machine precision** — see
+[Validation against MATLAB](#validation-against-matlab). The cortical path has
+**no MATLAB reference**: its ROI coordinates and GSR maths are a careful reading
+of [`Antea_scripts/`](Antea_scripts/), pinned to those scripts by
+`tests/test_atlas_transcription.py` and validated as *arithmetic* (the vectorised
+OLS matches a per-pixel `lstsq` fit), but not proven to reproduce a MATLAB run.
+See [MERGING_PLAN.md](MERGING_PLAN.md) Phase 8.
+
+> **Other docs:** [GUIDE.md](GUIDE.md) — a plain-language tour of every script and
+> how to run it; [LIBRARY.md](LIBRARY.md) — the full programming API and the rules
+> for editing the package; [REFERENCE.md](REFERENCE.md) — the terse canonical
+> technical map.
+
+The cerebellar ROIs are the left/right **vermis** (`Verme_L/R`) and the left/right
+**lateral hemispheres** (`Laterale_L/R`). The cortical ROIs are 22 regions (11 per
+hemisphere: motor, barrel field, trunk, limb, retrosplenial and visual areas) —
+see [`src/wfci/atlases.py`](src/wfci/atlases.py). Neither set is built in: the ROI
+layout is an argument, so a study can supply its own. Background: Falcicchia et
+al., "Microglial extracellular vesicles induce Alzheimer's disease-like changes",
+*Brain Communications* 2023 (open access) — not redistributed here; see
+`.gitignore`.
 
 ---
 
@@ -33,12 +52,15 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"   # Git Bash
 | Task | Command |
 |------|---------|
 | Run the pipeline (edit `RUN_CONFIG` first, or pass flags) | `conda run -n letizia python run_pipeline.py` |
-| Run the pipeline from CLI | `conda run -n letizia python run_pipeline.py --source stack_file --no-streaming --mode resting_state --trial gcamp.tif,emo.tif --bregma-row 121 --bregma-col 134` |
-| Run on a large recording (constant memory) | `conda run -n letizia python run_pipeline.py --source stack_file --streaming --mode resting_state --trial gcamp.tif,emo.tif --bregma-row 121 --bregma-col 134` |
-| Run on one folder of interleaved (odd/even) channels | `conda run -n letizia python run_pipeline.py --source interleaved_folder --no-streaming --mode resting_state --trial data --bregma-row 121 --bregma-col 134` |
-| Stream a large interleaved folder (constant memory) | `conda run -n letizia python run_pipeline.py --source interleaved_folder --streaming --mode resting_state --trial /path/big_folder --bregma-row 121 --bregma-col 134` |
-| Debug run: only the first N frames per channel | `conda run -n letizia python run_pipeline.py --source interleaved_folder --no-streaming --mode resting_state --trial data --bregma-row 121 --bregma-col 134 --debug-max-frames 60` |
+| Run the pipeline from CLI | `conda run -n letizia python run_pipeline.py --source stack_file --no-streaming --profile cerebellar_rs --trial gcamp.tif,emo.tif --bregma-row 121 --bregma-col 134` |
+| Run on a large recording (constant memory) | `conda run -n letizia python run_pipeline.py --source stack_file --streaming --profile cerebellar_rs --trial gcamp.tif,emo.tif --bregma-row 121 --bregma-col 134` |
+| Run on one folder of interleaved (odd/even) channels | `conda run -n letizia python run_pipeline.py --source interleaved_folder --no-streaming --profile cerebellar_rs --trial data --bregma-row 121 --bregma-col 134` |
+| Stream a large interleaved folder (constant memory) | `conda run -n letizia python run_pipeline.py --source interleaved_folder --streaming --profile cerebellar_rs --trial /path/big_folder --bregma-row 121 --bregma-col 134` |
+| **Cortical pipeline (22 ROIs, mask + GSR)** | `conda run -n letizia python run_pipeline.py --source interleaved_folder --streaming --profile cortical_gsr --mask mask.tif --trial /path/folder --bregma-row 126 --bregma-col 126` |
+| Force the interleaved channel order (skip the brightness guess) | `conda run -n letizia python run_pipeline.py --source interleaved_folder --profile cortical_gsr --mask mask.tif --channel-order emo_first --trial /path/folder --bregma-row 126 --bregma-col 126` |
+| Debug run: only the first N frames per channel | `conda run -n letizia python run_pipeline.py --source interleaved_folder --no-streaming --profile cerebellar_rs --trial data --bregma-row 121 --bregma-col 134 --debug-max-frames 60` |
 | Runnable example on sample data | `conda run -n letizia python examples/run_example.py` |
+| Worked group-contrast study (cohort → DIFF → figures) | `conda run -n letizia python experiments/healthy_vs_disease_day4.py` |
 | Benchmark all 4 layouts (RAM, time, cross-layout + MATLAB parity) | `conda run -n letizia python benchmarks/benchmark_modalities.py` |
 | Estimate time + RAM for a full folder from short debug runs | `conda run -n letizia python benchmarks/benchmark_scaling.py --folder "\\\\server\\share\\animal\\t1" --limits 200,300,400` |
 | Parity test vs MATLAB | `conda run -n letizia python -m pytest tests/ -s -v` |
@@ -60,15 +82,89 @@ result = run_resting_state(trials, cfg)                       # or run_stimulate
 print(result.R_mean)                                          # 4x4 connectivity matrix
 ```
 
+The cortical pipeline is the same call with a profile and a mask:
+
+```python
+from wfci import CORTICAL_GSR, ROIConfig, load_mask, load_stack, run_profile
+
+trials = [(load_stack("gcamp.tif"), load_stack("emo.tif"))]
+cfg = ROIConfig.from_bregma(bregma_row=126, bregma_col=126)   # profile supplies the atlas
+mask = load_mask("mask.tif")                                  # 256x256 for 512x512 raw
+result = run_profile(trials, cfg, CORTICAL_GSR, mask=mask)
+print(result.R_mean.shape)                                    # (22, 22)
+print(CORTICAL_GSR.labels)                                    # the row/column order
+```
+
+A custom atlas or profile needs no library change:
+
+```python
+from dataclasses import replace
+from wfci import CORTICAL_GSR, Atlas, Box
+
+my_atlas = Atlas(
+    name="my_study",
+    boxes={"left_M1": Box(-17, -12, -32, -27), "right_M1": Box(-17, -12, 27, 32)},
+    grid=(128, 128),          # the FINAL frame these offsets were drawn for
+    source="drawn by AB, 2026-03, 4x objective",
+)
+my_profile = replace(CORTICAL_GSR, name="my_study", atlas=my_atlas)
+```
+
+Or keep the geometry in a file the study owns — see
+[Bringing your own ROI atlas](#bringing-your-own-roi-atlas).
+
 ---
 
 ## Expected input
 
 Each **trial** consists of two channels: a GCaMP fluorescence stack and an
-`emo` (hemodynamic / reflectance) stack. A run is described by **two independent
-knobs**: `--source` (how the channels are stored on disk) and `--streaming`
-(whether to load into RAM or read frame-by-frame in constant memory). Any
-`--source` can be combined with either memory strategy.
+`emo` (hemodynamic / reflectance) stack. A run is described by **three
+independent knobs**: `--profile` (which pipeline to run), `--source` (how the
+channels are stored on disk) and `--streaming` (whether to load into RAM or read
+frame-by-frame in constant memory). All three combine freely — any profile runs
+from any source, streaming or not, and produces the same numbers either way.
+
+**`--profile` (which pipeline):**
+
+- **`cerebellar_rs`** (default): 4 cerebellar ROIs, 20-frame trim,
+  full-recording baseline and correlation. The original behaviour of this script.
+- **`cerebellar_stim`**: as above but with a pre-stimulus baseline (MATLAB
+  `1:278`) and a stimulus-window correlation (MATLAB `280:300`).
+- **`cortical_gsr`**: 22 cortical ROIs, **no** trim, full-recording baseline,
+  plus two extra stages — a **brain mask** and **global signal regression** —
+  between the correction and the ROI means. Requires `--mask PATH`.
+
+Profiles are presets, not a closed set: build your own `wfci.Profile` (or
+`dataclasses.replace` one of these) for a study-specific setup, without editing
+the package. `--mode resting_state|stimulated` still works as a **deprecated
+alias** for the two cerebellar profiles.
+
+**`--atlas PATH` (optional, any profile):**
+
+A YAML/JSON ROI layout to use **instead of** the profile's built-in one — see
+[Bringing your own ROI atlas](#bringing-your-own-roi-atlas). Everything else about
+the profile (windows, trim, mask/GSR stages) still applies, so this stays "the
+cortical pipeline, on my ROIs".
+
+**`--mask PATH` (required by `cortical_gsr`, rejected by the others):**
+
+A single 2-D TIFF marking the brain: non-zero inside, zero outside. It must be
+drawn on the **once-downsampled** FOV — e.g. **256×256** for 512×512 raw frames —
+matching the MATLAB's `imresize(Mask,0.5,'box')` in
+`Antea_scripts/(2)_Global_Signal_Regression_SCRIPT.txt`; the pipeline applies
+that same 0.5× box resize to land it on the final 128×128 grid. Masked-out pixels
+become `NaN` for every frame and trial, and every later average ignores them. A
+wrong-resolution mask is an error, not a broadcast.
+
+**`--channel-order` (interleaved folders only):**
+
+- **`auto`** (default): identify the channels by brightness — the brighter group
+  is GCaMP. This is what the package has always done.
+- **`gcamp_first` / `emo_first`**: assign by position instead, reading no pixels
+  at all. The MATLAB scripts do this implicitly (cerebellar: GCaMP first;
+  cortical: emo first), and getting it wrong **silently swaps the channels** and
+  inverts the hemodynamic correction. Use these only when you know the layout and
+  the brightness heuristic misfires (e.g. an unusually dim GCaMP recording).
 
 **`--source` (storage format):**
 
@@ -132,21 +228,94 @@ frames of one channel, used by the parity test and example.
 
 ---
 
+## Bringing your own ROI atlas
+
+ROI geometry is **experimental design**: which regions you care about, and where
+they land, depends on your preparation and your rig — not on the analysis maths.
+So the library never *requires* its presets. `CEREBELLUM_4` and `CORTEX_22` are
+validated defaults that reproduce the two MATLAB pipelines; a study can bring its
+own layout and keep it in a file it owns, next to its Bregma values and trial
+list.
+
+Export a preset as a starting point, edit it, run it:
+
+```python
+from wfci import CORTEX_22, save_atlas
+save_atlas(CORTEX_22, "my_study/atlas.yaml")     # one line per ROI, ready to edit
+```
+
+```yaml
+name: motor_only
+grid: [128, 128]          # the FINAL frame these offsets were drawn for
+source: derived from CORTEX_22, motor regions only, 2026-03
+boxes:                    # ORDER IS THE COLUMN ORDER OF R
+  M2L_alta:  {row_start: -28, row_end: -23, col_start: -15, col_end: -10}
+  M1L_alta:  {row_start: -17, row_end: -12, col_start: -32, col_end: -27}
+  M2R_alta:  {row_start: -28, row_end: -23, col_start:  10, col_end:  15}
+  M1R_alta:  {row_start: -17, row_end: -12, col_start:  27, col_end:  32}
+```
+
+```bash
+conda run -n letizia python run_pipeline.py --profile cortical_gsr \
+    --atlas my_study/atlas.yaml --mask mask.tif \
+    --source interleaved_folder --trial /path/folder \
+    --bregma-row 126 --bregma-col 126
+```
+
+Offsets are **MATLAB-style: 1-based and inclusive**, relative to Bregma — written
+exactly as in the original scripts, so a file can be diffed against them by eye.
+Selecting fewer ROIs is a *view*, not a different analysis: everything upstream
+(correction, masking, the global signal) is computed over the whole brain, so the
+surviving ROIs come out bit-for-bit unchanged.
+
+### Why `grid` matters
+
+**The boxes are not anatomy.** They are anatomy projected through one optical
+setup — a field of view, a magnification, a downsampling. The same region sits at
+different pixel offsets on a different rig. `grid` declares the **final** frame
+(after both 0.5× downsamples) the offsets were drawn for, and the pipeline refuses
+to run against anything else.
+
+That check is not bureaucracy. Without it the failure is silent:
+
+- a box running off the **left** edge is a *negative* index, and NumPy reads
+  negative indices **from the far end** — so a left-hemisphere ROI quietly
+  averages the **right** side of the brain and returns a perfectly ordinary
+  number. (MATLAB raises here; the Python port was more permissive than its
+  source.)
+- an atlas drawn for a **different FOV** whose boxes all still fit is wrong by a
+  scale factor while every ROI lands on real pixels. Bounds-checking cannot see
+  this; only a declared `grid` can.
+
+Both now raise, naming the ROI and the coordinate. Omit `grid` (or set it to
+`None`) if you genuinely don't know — you keep the bounds check and lose only the
+wrong-FOV one.
+
+---
+
 ## Expected output
 
-`run_pipeline.py` prints the 4×4 `R_mean` connectivity matrix and, unless
-`output_path` is `None`, writes an `.npz` (default `outputs/connectivity.npz`)
-containing:
+`run_pipeline.py` prints the profile, the stage chain it ran, and the `R_mean`
+connectivity matrix; unless `output_path` is `None`, it writes an `.npz` (default
+`outputs/connectivity.npz`) containing:
 
 | Array | Shape | MATLAB name |
 |-------|-------|-------------|
-| `dff_stack` | `[y, x, time, trial]` | `t_TEMP_resize1` |
-| `temp_roi` | `[time, 4, trial]` | `TEMP_ROI` |
-| `R` | `[4, 4, trial]` | `R` |
-| `R_mean` | `[4, 4]` | `R_mean` |
-| `averaged_traces` | `[time, 4]` | `averaged_traces` |
+| `dff_stack` | `[y, x, time, trial]` | `t_TEMP_resize1` (in-memory runs only) |
+| `temp_roi` | `[time, n_rois, trial]` | `TEMP_ROI` |
+| `R` | `[n_rois, n_rois, trial]` | `R` |
+| `R_mean` | `[n_rois, n_rois]` | `R_mean` |
+| `averaged_traces` | `[time, n_rois]` | `averaged_traces` |
+| `roi_labels` | `[n_rois]` | — (the row/column order of `R`) |
+| `profile` | scalar string | — (which pipeline produced this) |
 
-Region/column order is `[Laterale_L, Verme_L, Laterale_R, Verme_R]`.
+`n_rois` is 4 for the cerebellar profiles and 22 for `cortical_gsr`. Column order
+is the profile atlas's own order — `[Laterale_L, Verme_L, Laterale_R, Verme_R]`
+for the cerebellar profiles, and for `cortical_gsr` all 11 **left** regions then
+all 11 **right** (matching the MATLAB's `ALL = cat(2, regioni_L, regioni_R)`).
+`roi_labels` is saved alongside the matrix because a 22×22 matrix is not
+something you can label from memory afterwards.
+
 `examples/run_example.py` additionally writes `examples/output/roi_overlay.png`
 (step-2 ROI-placement overlay).
 
@@ -159,6 +328,34 @@ pixel data, so outputs must match to roundoff), and a **cross-check against the
 MATLAB interleaved script** (`matlab/step_interleaved_intermingle.m`).
 Intermediate inputs and per-layout `.npz` results are written under
 `temporary_files/modality_bench/`.
+
+---
+
+## Group analysis across animals
+
+`run_pipeline.py` produces one `R_mean` per animal. Comparing **groups** of
+animals — the `DIFF = healthy − disease` of MATLAB steps 5–6 — is a separate,
+generic layer (`wfci.cohort`, `wfci.significance`):
+
+```python
+from wfci import CohortTable, load_results, mask_by_adjacency, network_figure
+
+# The study's callback says which group/condition each file is — the ONLY place
+# that knowledge lives (the library never learns it).
+def whose(path): return {"group": "healthy" if "PV" in path.stem else "disease"}
+
+table   = CohortTable(load_results("outputs/*.npz", metadata_from=whose))
+diff    = table.select(group="healthy").mean() - table.select(group="disease").mean()
+network_figure(mask_by_adjacency(diff.matrix, nbs_adjacency), labels=diff.labels)
+```
+
+The **library holds no study knowledge** — no group name, animal, sex or day
+(enforced by a grep test). Which animals exist and how they split lives in a
+study script under [`experiments/`](experiments/), the *policy* layer you own and
+edit. See [experiments/README.md](experiments/README.md) and the worked example
+[`experiments/healthy_vs_disease_day4.py`](experiments/healthy_vs_disease_day4.py).
+The network-based statistic (NBS) itself is **not** re-implemented — `wfci`
+consumes an adjacency matrix; it does not compute one.
 
 ---
 
@@ -237,13 +434,30 @@ letizia/
 │   ├── resize.py             ← MATLAB-equivalent imresize(...,'box')
 │   ├── correction.py         ← step 1: hemodynamic ΔF/F
 │   ├── config.py             ← ROIConfig (Bregma + ROI boxes)
+│   ├── atlases.py            ← Atlas + presets (CEREBELLUM_4 / CORTEX_22), load/save
+│   ├── mask.py               ← brain mask → NaN (cortical stage)
+│   ├── gsr.py                ← global signal regression (cortical stage)
+│   ├── profiles.py           ← Profile presets: which pipeline to run
 │   ├── roi.py                ← step 3: ROI traces + connectivity
-│   ├── streaming.py          ← constant-memory steps 1+3 for large files
+│   ├── streaming.py          ← constant-memory pipeline for large files
 │   ├── visualize.py          ← step 2: ROI overlay
-│   └── pipeline.py           ← orchestration (RS / stimulated)
+│   ├── cohort.py             ← generic group layer (stack/select/mean/DIFF)
+│   ├── significance.py       ← generic figures (mask by adjacency, network, bars)
+│   └── pipeline.py           ← orchestration (correction → [mask] → [GSR] → ROI → conn.)
 ├── tests/
-│   ├── test_parity.py        ← Python-vs-MATLAB numerical parity
+│   ├── test_parity.py        ← Python-vs-MATLAB numerical parity (cerebellar)
 │   ├── test_streaming.py     ← streaming vs in-memory equivalence
+│   ├── test_efficiency_invariants.py ← I1–I11: decode/open counts, constant memory
+│   ├── test_atlas_transcription.py   ← CORTEX_22 pinned to the MATLAB source
+│   ├── test_atlas_generality.py      ← pipeline sized by the atlas, not by "4"
+│   ├── test_atlas_files.py           ← load/save an atlas a study owns
+│   ├── test_roi_bounds.py            ← geometry that does not fit must raise
+│   ├── test_cohort.py                ← group means/DIFF + the P2 boundary grep
+│   ├── test_significance.py          ← masking, per-node reductions, headless figures
+│   ├── test_mask.py          ← masking → NaN, thresholds, resolution checks
+│   ├── test_gsr.py           ← vectorised OLS ≡ per-pixel lstsq
+│   ├── test_streaming_gsr.py ← streaming GSR ≡ in-memory GSR, still 2 passes
+│   ├── test_cli.py           ← --profile / --mode alias / mask rules
 │   └── matlab_reference/
 │       ├── gen_reference.m   ← generates reference.mat from sample data
 │       └── reference.mat     ← MATLAB outputs (git-ignored; regenerate)
@@ -251,12 +465,17 @@ letizia/
 │   ├── run_example.py        ← end-to-end demo on sample data
 │   ├── README.md
 │   └── output/               ← example outputs
+├── experiments/             ← study scripts (POLICY: groups, splits, figures)
+│   ├── healthy_vs_disease_day4.py  ← worked group contrast (Antea steps 5-6)
+│   ├── README.md
+│   └── output/               ← study figures
 ├── benchmarks/               ← modality comparison (RAM / time / parity)
 │   ├── benchmark_modalities.py  ← orchestrator + report writer (entrypoint)
 │   ├── bench_worker.py          ← runs one layout in an isolated subprocess
 │   └── bench_common.py          ← input prep + per-layout run helpers
 ├── outputs/                  ← modality_comparison.txt (benchmark report)
 ├── data/                     ← sample TIFFs (R11_00001..7.tif)
+├── Antea_scripts/            ← original cortical MATLAB scripts (no parity reference)
 ├── matlab/                   ← original MATLAB scripts (kept for reference/parity)
 │   └── step_interleaved_intermingle.m  ← interleaved modality reference
 └── Microglial extracellular vesicles induce.pdf
@@ -289,6 +508,25 @@ Run it yourself:
 matlab -batch "run('tests/matlab_reference/gen_reference.m')"   # once, to (re)build reference.mat
 conda run -n letizia python -m pytest tests/ -s -v
 ```
+
+### What is *not* validated this way: the cortical pipeline
+
+The table above covers the **cerebellar** profiles only. There is **no MATLAB
+reference for `cortical_gsr`**, and this is a deliberate, documented gap
+([MERGING_PLAN.md](MERGING_PLAN.md) P4 / Phase 8) rather than an oversight. What
+*is* checked:
+
+| Claim | How | Result |
+|-------|-----|--------|
+| The 22 ROI boxes match the MATLAB source | `tests/test_atlas_transcription.py` parses `Antea_scripts/(3)` and `(4)` and compares every coordinate | exact |
+| The scripts' two duplicate box lists agree | same test, re-run every time | identical |
+| The column order matches `ALL = cat(2, regioni_L, regioni_R)` | same test | exact |
+| GSR's vectorised OLS ≡ a per-pixel `lstsq` fit | `tests/test_gsr.py` | ~8e-15 |
+| Streaming GSR ≡ in-memory GSR | `tests/test_streaming_gsr.py` | ~1e-14 |
+
+So the *arithmetic* is pinned and the *transcription* is pinned to the scripts —
+but nothing proves that running the original MATLAB on real data would produce
+these numbers. Treat the cortical path as carefully-read, not machine-verified.
 
 ---
 

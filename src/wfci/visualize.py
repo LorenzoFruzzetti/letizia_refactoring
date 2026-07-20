@@ -1,9 +1,16 @@
-"""Step 2 - ROI placement sanity check (visual overlay).
+"""Step 2 - ROI placement check (visual overlay).
 
-Reproduces ``step2_area_location_*.m``: paint the four ROI boxes onto a
-representative Delta F / F frame and display it, so you can confirm the boxes
-land on vermis and lateral hemispheres relative to Bregma. This is a visual
+Reproduces ``step2_area_location_*.m`` / ``Antea_scripts/(3)_..._ROIposition.txt``:
+paint the ROI boxes onto a representative Delta F / F frame and display it, so you
+can confirm the boxes land where you expect relative to Bregma. This is a visual
 check only, not part of the numeric pipeline.
+
+**One atlas, drawn and averaged.** The MATLAB writes the box coordinates twice --
+once in the step-2 overlay script, once in the step-3 averaging script -- and the
+cerebellar pair has *drifted*: step 2 draws ``Laterale_L`` three columns from where
+step 3 averages it, so the figure meant to verify the ROI shows a box only half
+overlapping the data it came from. Here the overlay reads the same ``cfg.boxes``
+the pipeline averages, so the picture cannot disagree with the numbers.
 """
 
 from __future__ import annotations
@@ -11,14 +18,24 @@ from __future__ import annotations
 import numpy as np
 
 from .config import ROIConfig
-from .roi import _box_slices
+from .roi import box_slices_for
 
 
-def overlay_rois(frame: np.ndarray, cfg: ROIConfig, fill: float = 1.0) -> np.ndarray:
-    """Return a copy of ``frame`` with the four ROI boxes filled with ``fill``."""
+def overlay_rois(
+    frame: np.ndarray,
+    cfg: ROIConfig,
+    fill: float = 1.0,
+    expected_grid: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Return a copy of ``frame`` with the ROI boxes filled with ``fill``.
+
+    Boxes are validated against the frame (:func:`wfci.roi.box_slices_for`), so an
+    ROI that does not fit raises here too -- an overlay that quietly painted the
+    wrong pixels would be worse than no overlay, since its whole job is to be
+    trusted as a check.
+    """
     out = frame.copy()
-    for box in cfg.boxes.values():
-        rs, cs = _box_slices(box, cfg.y_1, cfg.x_2)
+    for _name, rs, cs in box_slices_for(cfg, frame.shape[:2], expected_grid):
         out[rs, cs] = fill
     return out
 

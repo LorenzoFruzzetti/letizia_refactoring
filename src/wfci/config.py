@@ -1,17 +1,16 @@
-"""ROI geometry configuration (Bregma reference + the four ROI boxes).
+"""ROI geometry configuration (Bregma reference + the ROI boxes).
 
 The MATLAB scripts hard-code, per animal, a downsampled Bregma position
-(``y_1``, ``x_2``) and four ROI boxes given as *offsets* from Bregma. The box
-extents below are copied verbatim from ``step3_ROI_functional_connectivity.m``
-using MATLAB's 1-based, inclusive ranges. We keep them in MATLAB terms here and
-convert to Python indexing at extraction time, so the numbers stay auditable
-against the original script.
+(``y_1``, ``x_2``) and a set of ROI boxes given as *offsets* from Bregma. We keep
+them in MATLAB terms here (1-based, inclusive ranges) and convert to Python
+indexing at extraction time, so the numbers stay auditable against the original
+scripts.
 
-MATLAB box definitions (rows, cols as offsets from y_1 / x_2):
-    Verme_R    = img(y_1+22 : y_1+27, x_2+0  : x_2+5)
-    Verme_L    = img(y_1+22 : y_1+27, x_2-12 : x_2-7)
-    Laterale_R = img(y_1+21 : y_1+26, x_2+29 : x_2+34)
-    Laterale_L = img(y_1+21 : y_1+26, x_2-34 : x_2-29)
+Nothing here is anatomy-specific: the boxes are an **argument**. The default is
+the cerebellar 4-ROI layout because that is what this package shipped with, but
+:mod:`wfci.atlases` also provides the cortical 22-ROI layout, and a study with
+its own layout just passes its own dict. Everything downstream sizes itself from
+``len(boxes)``.
 """
 
 from __future__ import annotations
@@ -29,26 +28,49 @@ class Box:
     col_end: int    # offset added to x_2
 
 
+def _default_boxes() -> dict[str, Box]:
+    """The cerebellar 4-ROI atlas, i.e. this package's original default.
+
+    Imported lazily: :mod:`wfci.atlases` imports :class:`Box` from this module,
+    so a module-level import here would be circular.
+    """
+    from .atlases import CEREBELLUM_4
+
+    return dict(CEREBELLUM_4)
+
+
 @dataclass
 class ROIConfig:
-    """Per-animal Bregma reference and the four ROI boxes.
+    """Per-animal Bregma reference and the ROI boxes to average.
 
     ``y_1`` / ``x_2`` are the downsampled Bregma coordinates, i.e.
     ``floor(bregma_row / 2)`` and ``floor(bregma_col / 2)`` in the MATLAB code.
+
+    ``boxes`` order is significant: it is the column order of ``TEMP_ROI`` and
+    hence the row/column order of the correlation matrix ``R``. The default is
+    :data:`wfci.atlases.CEREBELLUM_4` -- ``[Laterale_L, Verme_L, Laterale_R,
+    Verme_R]``, matching the MATLAB. Pass :data:`wfci.atlases.CORTEX_22` (or any
+    dict) for a different layout; no other code changes.
     """
 
     y_1: int
     x_2: int
-    # Order matters: this is the column order of TEMP_ROI produced by step 3,
-    # namely [Laterale_L, Verme_L, Laterale_R, Verme_R].
-    boxes: dict[str, Box] = field(
-        default_factory=lambda: {
-            "Laterale_L": Box(21, 26, -34, -29),
-            "Verme_L": Box(22, 27, -12, -7),
-            "Laterale_R": Box(21, 26, 29, 34),
-            "Verme_R": Box(22, 27, 0, 5),
-        }
-    )
+    boxes: dict[str, Box] = field(default_factory=_default_boxes)
+
+    @property
+    def labels(self) -> list[str]:
+        """ROI names in column order -- the labels of ``TEMP_ROI`` / ``R``.
+
+        Derived from ``boxes`` rather than stored alongside it: a second list
+        would be free to disagree with the boxes it names (wrong length, stale
+        order), and a mislabelled-but-valid correlation matrix is precisely the
+        error nothing downstream can detect. One source of truth instead.
+        """
+        return list(self.boxes.keys())
+
+    @property
+    def n_rois(self) -> int:
+        return len(self.boxes)
 
     @classmethod
     def from_bregma(cls, bregma_row: int, bregma_col: int, **kwargs) -> "ROIConfig":

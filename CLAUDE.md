@@ -18,6 +18,7 @@ README quality rules:
 - Paths should be explicit and consistent with target project root.
 - Update README whenever refactoring changes entrypoints, I/O contracts, or structure.
 - Keep `REFERENCE.md` as the canonical technical map of the repository and reference it directly from `README.md` and from this agent file.
+- Companion docs, kept in sync when the API or entrypoints change: `LIBRARY.md` (the single self-contained doc for using/editing the `wfci` package — full API, array-shape conventions, the do-not-break invariants I1–I11, the library/experiment boundary P2) and `GUIDE.md` (a human-facing tour of every script and how to run it). When editing the package, read `LIBRARY.md` first.
 
 ## 2) Operating Contract
 - Work inside the target project folder unless compatibility work is explicitly required.

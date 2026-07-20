@@ -1,6 +1,91 @@
 # Merging Plan — one Python framework for both wide-field pipelines
 
-**Status:** proposal, not yet implemented. No code has been changed.
+**Status: Phases 0–7 implemented.** The cortical pipeline runs end to end, in
+memory and streaming, from the CLI and the API; the generic cohort/figure layer
+and a worked study script are in place; and the agent-facing `LIBRARY.md` (plus a
+human-facing `GUIDE.md`) is written. Phase 8 (cortical MATLAB parity) remains
+deferred by design (P4).
+
+| Phase | State | Where |
+|-------|-------|-------|
+| 0 — freeze the invariants | done | `tests/test_efficiency_invariants.py` (15 tests, I1–I11); RAM-slope assert in `benchmarks/benchmark_scaling.py` |
+| 1 — generalise geometry | done (+ extended, see deviation 0) | `src/wfci/atlases.py`; `tests/test_atlas_transcription.py`, `test_atlas_generality.py`, `test_atlas_files.py`, `test_roi_bounds.py` |
+| 2 — mask stage | done | `src/wfci/mask.py`; `tests/test_mask.py` |
+| 3 — GSR, in-memory | done | `src/wfci/gsr.py`; `tests/test_gsr.py` |
+| 4 — profiles + wiring | done | `src/wfci/profiles.py`, `pipeline.py`, `run_pipeline.py`; `tests/test_cli.py` |
+| 5 — GSR under streaming | done | `src/wfci/streaming.py`; `tests/test_streaming_gsr.py` |
+| 6 — cohort layer + study script | done | `src/wfci/cohort.py`, `significance.py`; `experiments/healthy_vs_disease_day4.py`; `tests/test_cohort.py`, `test_significance.py` |
+| 7 — `LIBRARY.md` | done | `LIBRARY.md` (agent-facing, API generated from real signatures) + `GUIDE.md` (human-facing script tour); cross-linked from README/REFERENCE/CLAUDE.md |
+| 8 — cortical MATLAB parity | deferred by design (P4) | see §7 below |
+
+**Acceptance results.**
+
+- **P1 held, measured not asserted:** the README's documented commands produce
+  **byte-identical** output to the pre-merge code (`max|new − old| = 0` for
+  `temp_roi`, `R`, `R_mean`, `averaged_traces`, both in-memory and streaming), and
+  the MATLAB parity test is unchanged (`dff_stack` diff `0`, exact).
+- **Phase 3:** vectorised OLS ≡ per-pixel `lstsq` at **8e-15**.
+- **Phase 5:** streaming+GSR ≡ in-memory+GSR at **9e-15** (4 ROIs) / **1.8e-14**
+  (22 ROIs); decode count still exactly 2N per channel; peak memory grew 24 KB
+  over a 4× longer recording (budget 983 KB).
+- **Phase 0 guard proven to bite:** each of five plausible regressions (cached
+  `open()`, decoding in `tiff_frame_count`, reading every image in the split,
+  dropping path coercion, an extra pass) fails the guard — while the pre-existing
+  test suite stays green on all of them, which is exactly the blind spot §3
+  predicted.
+- **Phase 6:** `cohort.mean()`/`DIFF` match a plain-numpy hand computation; the
+  worked study renders its three figures headless; and **P2 is a test** — a grep
+  for `sani|pd_|macchi|day4|sex` over `src/wfci/` returns nothing, so no study
+  knowledge can leak into the library without a red suite. The step-5 female-split
+  discrepancy is a one-line selection in the study script, not a library concern
+  (as designed).
+
+**Deviations from this plan, and why** (all deliberate; see the phase notes):
+
+0. **An atlas is a self-describing `Atlas`, not a bare dict, and can live in a
+   file.** §4.1 has `atlases.py` hold "box dicts + labels". It holds
+   :class:`Atlas` objects instead — a read-only `Mapping` (so a drop-in for the
+   dicts) that also carries `grid` (the FOV the offsets were drawn for) and
+   `source` (provenance) — plus `load_atlas`/`save_atlas` for YAML/JSON, and a
+   `--atlas PATH` flag. **Why:** ROI boxes are not anatomy, they are anatomy
+   projected through one optical setup, so they silently stop being valid on a
+   different rig. Two failures were unguarded and both produced normal-looking
+   numbers: a box running off the left edge became a *negative* NumPy index and
+   averaged the **opposite hemisphere** (MATLAB raises here — the port was more
+   permissive than its source); and an atlas drawn for another FOV whose boxes all
+   still fit was wrong by a scale factor with nothing to detect it. `grid` +
+   `wfci.roi.box_slices_for` close both. The file support answers the same concern
+   from the other side: geometry is experimental design, so a study can own it
+   without editing the library. See `tests/test_roi_bounds.py`,
+   `tests/test_atlas_files.py`.
+
+1. **`labels` is derived, not stored.** §4.2 gives `Profile` a `labels: list[str]`
+   field and §5 Phase 1 gives one to `ROIConfig`. Both instead expose `labels` as
+   a **property** over the atlas dict's key order. A second list is free to
+   disagree with the boxes it names (wrong length, stale order), and a
+   mislabelled-but-valid correlation matrix is the one error nothing downstream
+   can detect. One source of truth instead.
+2. **`io.py` was touched** — a non-goal in §8. §4.3 requires an explicit
+   `channel_order`, and the only place the odd/even split exists is
+   `interleaved_channel_files`. Implementing the flag anywhere else would
+   duplicate that split and invite exactly the drift I6 exists to prevent. The
+   change is one optional parameter defaulting to today's behaviour; every
+   invariant still holds (and an explicit order now reads **zero** images instead
+   of two).
+3. **`global_signal` ignores `inf`, not just `NaN`.** MATLAB's `nanmean` +
+   `~isnan` both propagate `inf`, and ΔF/F divides by the emo channel, so a zero
+   there yields one. The MATLAB would feed that straight to `fitlm`; we exclude
+   non-finite values instead. Identical on clean data, no silent garbage on dirty
+   data. (P4: the general option over the MATLAB's accident.)
+4. **Channel order defaults to `auto` on every profile**, not to the MATLAB's
+   positional convention. Brightness-based identification is what this package
+   already did (P1) and is more robust than position — which is the very
+   channel-swap risk §4.3 wants gone. `gcamp_first`/`emo_first` are available to
+   force it.
+
+---
+
+## Original plan (as proposed)
 
 **Goal.** Extend the existing `wfci` package so that it runs **both** MATLAB
 pipelines — the cerebellar one in [matlab/](matlab/) (already ported, 4 ROIs, no
@@ -135,7 +220,7 @@ confirmed in the same check.
 
 ## 3. Invariants — the import efficiency work to preserve
 
-This repo is **not under git**, so there is no diff to read: the list below was
+the list below was
 reconstructed by reading [io.py](src/wfci/io.py),
 [streaming.py](src/wfci/streaming.py) and
 [run_pipeline.py](run_pipeline.py). **Please confirm nothing is missing before
@@ -450,12 +535,11 @@ Most of the earlier open questions are now settled by [§1](#1-design-principles
 the female split and friends move to `experiments/` (P2); MATLAB parity is
 deferred behind an option (P4); defaults never change (P1). What remains:
 
-1. **Is the invariant list in [§3](#3-invariants--the-import-efficiency-work-to-preserve) complete?**
-   No git history, so it was reconstructed by reading the code. **If you made
-   import changes I have not listed, they are not yet protected.** This is the one
-   genuine blocker for Phase 0.
-2. **`LIBRARY.md` vs `README.md`** for the agent-facing doc — see Phase 7.
-   Recommendation: `LIBRARY.md`, cross-linked. Trivial to change.
+1. ~~**Is the invariant list in [§3](#3-invariants--the-import-efficiency-work-to-preserve) complete?**~~
+   **Settled:** confirmed complete before Phase 0. I1–I11 are now enforced by
+   `tests/test_efficiency_invariants.py`.
+2. ~~**`LIBRARY.md` vs `README.md`**~~ **Settled:** `LIBRARY.md`, cross-linked —
+   but Phase 7 is not implemented, so the file does not exist yet.
 3. **Should the cerebellar pipeline gain optional GSR?** The framework makes it a
    one-flag change. A *scientific* decision, not a technical one; defaults stay
    off, preserving today's behaviour exactly (P1).

@@ -221,13 +221,32 @@ both compute connectivity as a per-trial `corr` averaged over trials. So the
 missing on the Python side is the mask, the GSR regression, the 22-ROI layout,
 and the group/NBS layer.
 
-**Practical consequence.** If the Antea pipeline is ever ported, the differences
-that matter most are (a) GSR is a per-pixel linear fit and is by far the most
-expensive step — 128×128 `fitlm` calls per trial — and is a strong candidate for
-vectorisation; (b) the channel assignment is reversed relative to `matlab/`, so
-the loader cannot be reused blindly; and (c) steps 5–6 encode the experimental
-design (group membership, sex) in **variable names**, which a port would have to
-replace with an explicit subject table.
+**Practical consequence — steps 1–4 are now ported.** They run as the
+`cortical_gsr` profile of the `wfci` package (`conda run -n letizia python
+run_pipeline.py --profile cortical_gsr --mask mask.tif ...`); see
+[README.md](README.md#entrypoints).
+
+The 22-ROI layout turned out **not** to be a code change: `wfci` sizes every
+output from `len(cfg.boxes)`, so the boxes are just a config argument
+([`src/wfci/atlases.py`](src/wfci/atlases.py) `CORTEX_22`). What genuinely had to
+be built was the **mask + GSR stage** ([`mask.py`](src/wfci/mask.py),
+[`gsr.py`](src/wfci/gsr.py)). Of the three differences flagged above:
+
+- **(a) GSR cost.** Vectorised, as anticipated. `fitlm` with one predictor and an
+  intercept *is* OLS, which has a closed form, so the 16 384 model fits per trial
+  collapse to a handful of array ops — and, via sufficient statistics, GSR still
+  runs in **constant memory** under the streaming path.
+- **(b) Channel assignment.** Not an obstacle: `wfci` identifies the channels by
+  **brightness**, not by position, so the same loader serves both pipelines.
+  `--channel-order gcamp_first|emo_first` forces the MATLAB's positional
+  convention if the heuristic ever misfires.
+- **(c) Experimental design in variable names.** Still true, and still unported —
+  steps **5–6** are out of scope by design. They belong in a per-study script, not
+  in the library ([MERGING_PLAN.md](MERGING_PLAN.md) P2, Phase 6).
+
+**Not validated against MATLAB.** Unlike the cerebellar port, the cortical path
+has no MATLAB reference; the coordinates and the GSR maths are a careful reading
+of these scripts. See [README.md](README.md#what-is-not-validated-this-way-the-cortical-pipeline).
 
 ---
 

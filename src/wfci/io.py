@@ -160,6 +160,7 @@ def interleaved_channel_files(
     folder: str | Path,
     pattern: str = "*.tif",
     top_percent: float = 10.0,
+    channel_order: str = "auto",
 ) -> tuple[list[Path], list[Path]]:
     """Split ONE interleaved folder into ordered ``(gcamp_files, emo_files)`` lists.
 
@@ -169,12 +170,22 @@ def interleaved_channel_files(
     even-positioned images (2nd, 4th, ...) the other -- exactly the odd/even
     split that ``src/inspect_channel_intensity.py`` inspects.
 
-    Channel identity is decided by intensity: the brighter group is GCaMP (the
-    fluorescence signal), the dimmer is emo (reflectance). We compare the first
-    image of each group (i.e. the first two images in the folder) by the mean of
-    their top ``top_percent``% pixels; the brighter one's group becomes gcamp.
-    Only those two images are read here, so this stays cheap even for a folder
-    that is too large to load.
+    ``channel_order`` decides which group is which:
+
+    ``"auto"`` (default)
+        Decide by intensity: the brighter group is GCaMP (the fluorescence
+        signal), the dimmer is emo (reflectance). We compare the first image of
+        each group (i.e. the first two images in the folder) by the mean of their
+        top ``top_percent``% pixels; the brighter one's group becomes gcamp. Only
+        those two images are read, so this stays cheap even for a folder too large
+        to load.
+    ``"gcamp_first"`` / ``"emo_first"``
+        Assign by position instead, reading nothing at all. This is what the
+        MATLAB scripts do implicitly (the cerebellar ones take GCaMP first, the
+        cortical ones emo first) -- and getting it wrong silently swaps the
+        channels, inverting the hemodynamic correction. Use these only when you
+        know the layout and the brightness heuristic misfires (e.g. an unusually
+        dim GCaMP recording).
 
     The two lists are truncated to equal length (odd total -> groups differ by
     one) so the channels stay in lockstep for the per-frame hemodynamic
@@ -182,6 +193,12 @@ def interleaved_channel_files(
     streaming path feeds each list to :func:`folder_frame_source` instead, so the
     same split powers both the load-it-all and constant-memory variants.
     """
+    valid_orders = ("auto", "gcamp_first", "emo_first")
+    if channel_order not in valid_orders:
+        raise ValueError(
+            f"channel_order={channel_order!r} is not one of {valid_orders}."
+        )
+
     folder = Path(folder)
     files = sorted(folder.glob(pattern))
     if len(files) < 2:
@@ -195,14 +212,19 @@ def interleaved_channel_files(
     odd_files = files[0::2]
     even_files = files[1::2]
 
-    # Decide which group is the brighter (GCaMP) channel from the first image of
-    # each group -- "the first two images" the user inspects.
-    odd_intensity = _top_percent_mean(tifffile.imread(str(odd_files[0])), top_percent)
-    even_intensity = _top_percent_mean(tifffile.imread(str(even_files[0])), top_percent)
-    if odd_intensity >= even_intensity:
+    if channel_order == "gcamp_first":
         gcamp_files, emo_files = odd_files, even_files
-    else:
+    elif channel_order == "emo_first":
         gcamp_files, emo_files = even_files, odd_files
+    else:
+        # Decide which group is the brighter (GCaMP) channel from the first image
+        # of each group -- "the first two images" the user inspects.
+        odd_intensity = _top_percent_mean(tifffile.imread(str(odd_files[0])), top_percent)
+        even_intensity = _top_percent_mean(tifffile.imread(str(even_files[0])), top_percent)
+        if odd_intensity >= even_intensity:
+            gcamp_files, emo_files = odd_files, even_files
+        else:
+            gcamp_files, emo_files = even_files, odd_files
 
     # Keep the two channels the same length (odd total -> groups differ by one).
     n = min(len(gcamp_files), len(emo_files))
@@ -213,6 +235,7 @@ def load_interleaved_folder(
     folder: str | Path,
     pattern: str = "*.tif",
     top_percent: float = 10.0,
+    channel_order: str = "auto",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Split ONE folder of interleaved single-page TIFFs into ``(gcamp, emo)``.
 
@@ -222,7 +245,9 @@ def load_interleaved_folder(
     recording too large for RAM, feed the same split to the streaming path via
     :func:`interleaved_channel_files` + :func:`folder_frame_source` instead.
     """
-    gcamp_files, emo_files = interleaved_channel_files(folder, pattern, top_percent)
+    gcamp_files, emo_files = interleaved_channel_files(
+        folder, pattern, top_percent, channel_order
+    )
     gcamp = np.stack(
         [np.asarray(tifffile.imread(str(f)), dtype=np.float64) for f in gcamp_files],
         axis=-1,

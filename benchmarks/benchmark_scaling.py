@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import tifffile
 
 # Make the sibling worker module importable no matter the current directory.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -144,6 +145,10 @@ def _run_worker(args: argparse.Namespace) -> None:
     result = runner(sources, cfg)
     compute_s = time.perf_counter() - t0
 
+    # One frame's resident size, so the RAM slope below can be judged against the
+    # thing it would scale with if streaming ever started accumulating frames.
+    probe = np.asarray(tifffile.imread(str(gcamp_files[lo])), dtype=np.float64)
+
     metrics = {
         "limit": n,
         "offset": lo,
@@ -153,6 +158,7 @@ def _run_worker(args: argparse.Namespace) -> None:
         "peak_working_set_bytes": peak_working_set_bytes(),
         "trace_frames": int(result.temp_roi.shape[0]),
         "channel_frames_available": len(gcamp_files),
+        "frame_bytes": int(probe.nbytes),
     }
     print("METRICS " + json.dumps(metrics))
 
@@ -190,6 +196,44 @@ def _linear_fit(x: np.ndarray, y: np.ndarray) -> tuple[float, float, float]:
     # ss_tot == 0 means y is perfectly flat (e.g. RAM that does not move at all).
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
     return float(a), float(b), r2
+
+
+# A frame is the unit the RAM slope would scale with if the streaming path ever
+# started holding the recording: a source that accumulated frames would cost one
+# frame (per channel) per frame read. Real streaming holds a fixed handful of
+# small images, so its slope sits at essentially 0 MB/frame -- a few hundred
+# bytes/frame of per-file bookkeeping, orders of magnitude under this budget.
+# 5% of a frame is therefore comfortably above the noise and far below any
+# genuine regression.
+RAM_SLOPE_BUDGET_FRACTION = 0.05
+
+
+def _check_ram_slope(ram_slope_bytes_per_frame: float, frame_bytes: int) -> None:
+    """Assert peak RAM is flat in frame count -- the constant-memory guarantee.
+
+    The slope was already being fitted and printed; printing alone means a
+    regression is only caught if a human reads the number and knows what it
+    should be. This turns it into a verdict that fails loudly.
+    """
+    budget = RAM_SLOPE_BUDGET_FRACTION * frame_bytes
+    ok = abs(ram_slope_bytes_per_frame) < budget
+
+    print("\n--- Constant-memory check -----------------------------------------")
+    print(f"  frame size          : {_fmt_mb(frame_bytes)} MB")
+    print(f"  measured RAM slope  : {ram_slope_bytes_per_frame / 1024 ** 2:+.5f} MB/frame")
+    print(f"  budget              : {budget / 1024 ** 2:.5f} MB/frame "
+          f"({RAM_SLOPE_BUDGET_FRACTION:.0%} of one frame)")
+    print(f"  verdict             : {'PASS' if ok else 'FAIL'}")
+    if not ok:
+        raise SystemExit(
+            f"\nCONSTANT-MEMORY REGRESSION: peak RAM grows "
+            f"{ram_slope_bytes_per_frame / 1024 ** 2:+.4f} MB per frame, i.e. it "
+            f"scales with the recording length. The streaming path is meant to be "
+            f"O(1) in frame count -- something is accumulating frames instead of "
+            f"reducing them away. See tests/test_efficiency_invariants.py (I10)."
+        )
+    print("\n  A ~0 MB/frame slope means the streaming path is genuinely")
+    print("  constant-memory and the folder size is irrelevant to RAM.")
 
 
 def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
@@ -298,9 +342,8 @@ def main() -> None:
               f"(if the data were local/cached -- compute only)")
     print(f"  RAM   : ~{_fmt_mb(ram_a + ram_b * n_available)} MB peak "
           f"(streaming: expected flat in frame count)")
-    print("\n  Read the RAM slope, not just the estimate: ~0 MB/frame means the")
-    print("  streaming path is genuinely constant-memory and the folder size is")
-    print("  irrelevant to RAM. A clearly positive slope would mean it is not.")
+
+    _check_ram_slope(ram_b, rows[0]["frame_bytes"])
 
 
 if __name__ == "__main__":

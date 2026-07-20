@@ -1,7 +1,9 @@
 # REFERENCE — Technical map of `wfci`
 
 Canonical technical reference for the repository. See [README.md](README.md)
-for usage and [CLAUDE.md](CLAUDE.md) for operating conventions.
+for usage, [GUIDE.md](GUIDE.md) for a plain-language tour of the scripts,
+[LIBRARY.md](LIBRARY.md) for the full self-contained API + editing rules, and
+[CLAUDE.md](CLAUDE.md) for operating conventions.
 
 ## Data conventions
 
@@ -50,29 +52,51 @@ streaming reader for the same format, so any format can be run either way.
   - `folder_frame_source(files)` — an explicit ordered file list (used for one
     channel of an interleaved folder, from `interleaved_channel_files`).
 
-### `streaming.py` (constant-memory steps 1 + 3)
-Same math as `correction.py` + `roi.py`, but never holds a full stack in RAM —
-for recordings too large to load (the MATLAB `>4gb non lo legge` case).
-- `stream_trial_roi(gcamp, emo, cfg, baseline_slice, trim=20, downsample=0.5) ->
-  [time, 4]` — streams one trial to its ROI trace in **two passes**: pass 1
-  accumulates the baseline-window running sum of the half-res frames →
-  `MIf`/`MIr`; pass 2 re-reads, applies ΔF/F per frame, downsamples again, and
-  reduces each frame to four ROI `nanmean` values. Only a couple of small images
-  are ever resident. `gcamp`/`emo` are `FrameSource` objects (any storage
-  format); a bare TIFF path is also accepted and treated as a multi-page file
-  (original call style).
+### `streaming.py` (constant-memory pipeline)
+Same math as `correction.py` + `roi.py` (+ `mask.py`/`gsr.py`), but never holds a
+full stack in RAM — for recordings too large to load (the MATLAB
+`>4gb non lo legge` case).
+- `stream_trial_roi(gcamp, emo, cfg, baseline_slice, trim=20, downsample=0.5,
+  mask=None, gsr=None, mask_threshold=0.0) -> [time, n_rois]` — streams one trial
+  to its ROI trace in **two passes**: pass 1 accumulates the baseline-window
+  running sum of the half-res frames → `MIf`/`MIr`; pass 2 re-reads, applies ΔF/F
+  per frame, downsamples again, and reduces each frame to `n_rois` `nanmean`
+  values. Only a couple of small images are ever resident. `gcamp`/`emo` are
+  `FrameSource` objects (any storage format); a bare TIFF path is also accepted
+  and treated as a multi-page file (original call style).
 - `run_streaming(trial_sources, cfg, baseline_slice, corr_window, trim,
-  downsample) -> StreamingResult` — streams each `(gcamp, emo)` FrameSource pair
-  to its `[time, 4]` trace, stacks to `[time, 4, trial]`, then runs the usual
-  `functional_connectivity`.
+  downsample, mask=None, gsr=None) -> StreamingResult` — streams each
+  `(gcamp, emo)` FrameSource pair to its `[time, n_rois]` trace, stacks to
+  `[time, n_rois, trial]`, then runs the usual `functional_connectivity`.
+- `run_streaming_profile(trial_sources, cfg, profile, mask=None)` — streaming
+  counterpart of `run_profile`. Same profile, same numbers, constant memory.
 - `run_streaming_resting_state` / `run_streaming_stimulated` — window presets
   matching `run_resting_state` / `run_stimulated`.
 - `StreamingResult(temp_roi, R, R_mean, averaged_traces)` — like
   `PipelineResult` but **without `dff_stack`** (it is streamed away, so step-2
   visualization requires the in-memory path).
+
+**GSR under streaming** (`_stream_pass2_gsr`) — GSR regresses each pixel's *whole*
+time-series against the global signal, which looks like it needs `[y,x,time]`
+resident. It does not, for two reasons:
+1. Per-pixel OLS needs only **sufficient statistics**, all accumulable one frame
+   at a time: `N`, `Σg`, `Σg²` (scalars) and `Σp`, `Σgp` (two `[y,x]` images). The
+   global signal `g(t)` is a *spatial* mean, so it is known at frame `t` — no
+   lookahead.
+2. The ROI mean is linear and `g(t)` is one scalar per frame, so
+   `T_B(t) = mean_B(p(t)) − g(t)·mean_B(a) − mean_B(b)` — the regressed *stack* is
+   never needed.
+
+  Cost: two extra `[y,x]` images and two `[time]` vectors. **Still two passes.**
+- `_check_static_nans` — the precondition: `drop_pixel` decides validity from a
+  pixel's whole time-series, so a pixel that is NaN in *some* frames would be
+  treated differently by the two paths. Mask-only NaNs are static (fine); anything
+  else **raises** and points the caller at `--no-streaming`, rather than silently
+  returning numbers that differ from the in-memory reference.
 - Trade-offs: two disk passes instead of one; agreement with the in-memory path
-  is exact up to baseline-mean summation order (~1e-16). Verified in
-  `tests/test_streaming.py`.
+  is exact up to summation order (~1e-16 without GSR, ~1e-14 with). Verified in
+  `tests/test_streaming.py` and `tests/test_streaming_gsr.py`. The two-pass /
+  constant-memory guarantees are enforced by `tests/test_efficiency_invariants.py`.
 
 ### `resize.py`
 - `imresize_box(arr, scale)` — MATLAB-equivalent `imresize(arr, scale, 'box')`;
@@ -96,15 +120,89 @@ for recordings too large to load (the MATLAB `>4gb non lo legge` case).
 ### `config.py`
 - `Box(row_start, row_end, col_start, col_end)` — one ROI as MATLAB 1-based
   **inclusive** offsets from Bregma `(y_1, x_2)`.
-- `ROIConfig(y_1, x_2, boxes)` — per-animal geometry. Default `boxes` copy
-  `matlab/step3_ROI_functional_connectivity.m` verbatim.
-  `ROIConfig.from_bregma(bregma_row, bregma_col)` applies `floor(.../2)`.
+- `ROIConfig(y_1, x_2, boxes)` — per-animal geometry. Default `boxes` is
+  `atlases.CEREBELLUM_4`. `boxes` order **is** the column order of `TEMP_ROI` and
+  the row/column order of `R`. `ROIConfig.from_bregma(bregma_row, bregma_col)`
+  applies `floor(.../2)`. Properties: `.labels` (derived from `boxes`, never
+  stored separately), `.n_rois`.
+
+### `atlases.py`
+- `Atlas(name, boxes, grid=None, source="")` — an ordered `{label: Box}` mapping
+  that knows where it is valid. Read-only `Mapping`, so it is a drop-in for the
+  plain dict it replaced (`dict(atlas)`, `list(atlas)`, `atlas["V1R"]`,
+  `len(atlas)`, `atlas == {...}`). Copies its boxes, so a preset cannot be mutated
+  process-wide by a caller. `.labels` = column order.
+  - `grid` = `(rows, cols)` of the **final** analysis frame the offsets were drawn
+    for, or `None` for "unknown, do not check". **The boxes are not anatomy** —
+    they are anatomy projected through one optical setup, so they do not transfer
+    between FOVs. `grid` is the only thing that can catch a *scaled* atlas whose
+    boxes all still fit.
+  - `source` = free-text provenance.
+- `CEREBELLUM_4` — the 4 cerebellar boxes, verbatim from
+  `matlab/step3_ROI_functional_connectivity.m`. MATLAB-validated. `grid=(128,128)`.
+  (NB `step2_area_location_RS.m` draws `Laterale_L` 3 columns from where step3
+  averages it — the MATLAB pair has drifted. step3 wins; `wfci.visualize` derives
+  the overlay from the same atlas so it cannot drift again.)
+- `CORTEX_22` — the 22 cortical boxes, transcribed from `Antea_scripts/(3)` and
+  `(4)` (which duplicate each other and were cross-checked — **identical**).
+  Order = MATLAB's `ALL = cat(2, regioni_L, regioni_R)`: 11 left, then 11 right.
+  `grid=(128,128)`. **No MATLAB reference** — pinned to the source scripts by
+  `tests/test_atlas_transcription.py`, which re-parses the .txt files each run.
+- `ATLASES` — name → atlas. `atlas_labels(atlas)` — labels in column order.
+- `as_atlas(boxes, name="custom")` — coerce a plain dict to an `Atlas` (`grid=None`).
+- `load_atlas(path)` / `save_atlas(atlas, path)` — YAML or JSON, by extension. How
+  a study owns its geometry without editing the library. Round-trips; box order is
+  preserved (it *is* the column order of `R`). YAML is `safe_load`ed — an atlas is
+  data and must never execute. Unknown box keys are an error, not ignored.
+- Presets, not a closed set: any `{label: Box}` mapping is a valid atlas.
+
+### `mask.py` (cortical stage 1)
+- `load_mask(path) -> [y,x]` — explicit path in, float64 out. No `uiopen`.
+- `resize_mask(mask, scale=0.5)` — the **same** `imresize_box` as the data, so
+  mask and data land on one grid. Box-resizing a binary mask gives *fractional*
+  boundary values.
+- `valid_from_mask(mask, threshold=0.0) -> bool[y,x]` — keep `mask > threshold`.
+  `0.0` reproduces MATLAB's `if Mask_resized(i,j)==0` (partial coverage kept).
+- `apply_mask(stack, mask, threshold=0.0)` — outside → `NaN` across all frames and
+  trials. Shape mismatch is an error, not a broadcast.
+
+### `gsr.py` (cortical stage 2)
+- `GSRConfig(nan_policy="drop_pixel", min_variance=0.0)` — `"drop_pixel"` = MATLAB's
+  `if ~isnan(data(row,col,:))` (any NaN frame ⇒ pixel dropped everywhere).
+  `"per_frame"` is reserved and raises `NotImplementedError`.
+- `global_signal(stack) -> [time]` — spatial mean over each frame's **finite**
+  pixels. Purely spatial ⇒ knowable at frame `t` ⇒ streamable. (Stricter than
+  MATLAB's `nanmean`, which propagates `inf`.)
+- `regress_global(stack, cfg=None, g=None) -> [y,x,time]` — per-pixel OLS in
+  closed form: `a = cov(g,p)/var(g)`, `b = mean(p) − a·mean(g)`, residual
+  `p − a·g − b`. Replaces 16 384 `fitlm` calls per trial.
+
+### `profiles.py`
+- `Profile(name, atlas, trim, baseline, corr_window, use_mask, gsr,
+  mask_downsample, overlay_frame, channel_order, downsample)` — the per-pipeline
+  bundle. Frozen; copies its atlas. Properties `.labels`, `.n_rois`.
+- `CEREBELLAR_RS` — 4 ROIs, trim 20, full baseline/window.
+- `CEREBELLAR_STIM` — 4 ROIs, trim 20, baseline `slice(0,278)`, window `slice(279,300)`.
+- `CORTICAL_GSR` — 22 ROIs, trim 0, `use_mask=True`, `gsr=GSRConfig()`.
+- `PROFILES` / `get_profile(name)`. Presets, not a closed set.
 
 ### `roi.py` (step 3)
 - `_box_slices(box, y_1, x_2)` — MATLAB `y_1+a : y_1+b` (1-based inclusive) →
-  Python `slice(y_1+a-1, y_1+b)`.
-- `extract_roi_timeseries(dff_stack, cfg) -> [time, 4, trial]` — `nanmean` over
-  rows and cols of each ROI box → `TEMP_ROI`.
+  Python `slice(y_1+a-1, y_1+b)`. **Unvalidated**; prefer `box_slices_for`.
+- `box_slices_for(cfg, frame_shape, expected_grid=None) -> [(label, rs, cs), ...]` —
+  resolve every box against a real frame, **or raise**. Used by the in-memory
+  path, the streaming path and the overlay, so there is one definition of "does
+  this geometry fit".
+  - A box outside the frame does **not** fail loudly in NumPy: a negative index
+    reads from the opposite edge (a left ROI averages the right hemisphere and
+    returns a normal-looking number), and an over-long one truncates or empties.
+    MATLAB raises on a negative index — the port was more permissive than its
+    source. This raises, listing every offending ROI with its coordinates.
+  - `expected_grid` catches what bounds cannot: an atlas drawn for another FOV
+    whose boxes all still fit. Pass `atlas.grid`.
+- `extract_roi_timeseries(dff_stack, cfg, expected_grid=None) -> [time, n_rois, trial]`
+  — `nanmean` over rows and cols of each ROI box → `TEMP_ROI`. Sized from
+  `len(cfg.boxes)`; nothing is fixed at 4.
 - `functional_connectivity(temp_roi, window) -> (R, R_mean, averaged_traces)` —
   per-trial `np.corrcoef` (columns = regions) over `window`, then trial means.
   `np.corrcoef` matches MATLAB `corr` (N vs N−1 normalisation cancels).
@@ -115,23 +213,82 @@ for recordings too large to load (the MATLAB `>4gb non lo legge` case).
   clim=(0.3, 3.0), ax=None)` — display overlay (matplotlib).
 
 ### `pipeline.py`
-- `run_pipeline(trials, cfg, baseline_slice, corr_window, trim, downsample) ->
-  PipelineResult` — steps 1 + 3.
+The stage chain is `correction → [mask] → [GSR] → ROI → connectivity`; the
+bracketed stages are optional and configured, not branched on.
+- `run_pipeline(trials, cfg, baseline_slice, corr_window, trim, downsample,
+  mask=None, gsr=None, mask_threshold=0.0) -> PipelineResult`. `mask` must already
+  be at the corrected stack's resolution. Order matters: mask before GSR (the
+  global signal is the mean over *brain* pixels), both before the ROI means.
+- `run_profile(trials, cfg, profile, mask=None)` — the usual entry point; `cfg`
+  supplies only the Bregma, the profile supplies the atlas and everything else.
+  `mask` is passed **as loaded**; the profile's `mask_downsample` puts it on the
+  data's grid.
+- `prepare_mask(mask, profile)` — resize + enforce the profile's mask rules
+  (required when `use_mask`, rejected otherwise). Shared with the streaming path.
 - `run_resting_state(trials, cfg)` — baseline full, correlation full.
 - `run_stimulated(trials, cfg, baseline_slice=slice(0,278),
   corr_window=slice(279,300))` — MATLAB baseline `1:278`, window `280:300`.
 - `PipelineResult(dff_stack, temp_roi, R, R_mean, averaged_traces)`.
+
+### `cohort.py` (group layer — MATLAB step 5)
+Generic: **no study knowledge** (P2 — enforced by `tests/test_cohort.py`, which
+greps `src/wfci/`). Stacks per-animal matrices, selects subsets by study-defined
+metadata, averages and differences them.
+- `AnimalResult(matrix, labels, metadata={}, source="")` — one animal's
+  `[n_roi, n_roi]` matrix + the tags the study attaches (`group`, `animal`, …).
+  Validated square and label-matched.
+- `LabeledMatrix(matrix, labels)` — a matrix that keeps its labels through `-`/`+`;
+  `DIFF = healthy - disease` is one. Combining mismatched labels raises.
+- `load_results(paths, metadata_from=None, matrix_key="R_mean",
+  labels_key="roi_labels")` — read per-animal `.npz` (as `run_pipeline.py` writes).
+  `metadata_from(path)->dict` is the seam: the library reads the matrix, the study
+  says what it is.
+- `CohortTable(results)` — requires one shared label order (else not poolable).
+  - `.select(**criteria)` — AND over equality; empty selection raises.
+  - `.filter(predicate)`, `.groupby(key)`, `.values(key)`.
+  - `.stack() -> [n_roi, n_roi, n_animal]` (MATLAB `cat(3,…)`); `.mean() ->
+    LabeledMatrix` (`nanmean` over animals); `.to_dataframe()` (lazy pandas).
+
+### `significance.py` (figure layer — MATLAB step 6)
+Generic. **Ingests** an adjacency (significant edges, e.g. from NBS); does **not**
+compute the network statistic (non-goal). Colours/positions are arguments.
+- `mask_by_adjacency(value_matrix, adjacency, symmetrize=True)` — keep values where
+  `adjacency>0`, else 0; symmetrize (`triu+triu'`). NaN→0.
+- `node_strength(masked) -> [n]` — per-node weighted degree (an honest vector, not
+  the MATLAB's matrix-valued `node_sizes`).
+- `count_significant_edges(masked, sign) -> [n]` — per-node counts (`"negative"` /
+  `"positive"` / `"both"`); the bar-plot input.
+- `circular_layout(n)`, `hemispheric_layout(n_left, n_right)` — default positions.
+- `network_figure(masked, node_positions=None, node_values=None, labels=None,
+  cmap="RdBu_r", norm=None, …) -> Axes` — node-link plot; symmetric diverging
+  colour by default; every edge colour computed locally (not the MATLAB's reused
+  `COLOR_EDGE`).
+- `significance_barplot(masked, labels, sign="negative", ax=None) -> Axes`.
 
 ## MATLAB ↔ Python variable map
 
 | MATLAB | Python | Shape |
 |--------|--------|-------|
 | `t_TEMP_resize1` | `PipelineResult.dff_stack` | `[y,x,time,trial]` |
-| `TEMP_ROI` | `PipelineResult.temp_roi` | `[time,4,trial]` |
-| `R` | `PipelineResult.R` | `[4,4,trial]` |
-| `R_mean` | `PipelineResult.R_mean` | `[4,4]` |
-| `averaged_traces` | `PipelineResult.averaged_traces` | `[time,4]` |
+| `TEMP_ROI` | `PipelineResult.temp_roi` | `[time,n_rois,trial]` |
+| `R` | `PipelineResult.R` | `[n_rois,n_rois,trial]` |
+| `R_mean` | `PipelineResult.R_mean` | `[n_rois,n_rois]` |
+| `averaged_traces` | `PipelineResult.averaged_traces` | `[time,n_rois]` |
 | `y_1`, `x_2` | `ROIConfig.y_1`, `ROIConfig.x_2` | scalars |
+
+Cortical pipeline (`Antea_scripts/`) only:
+
+| MATLAB | Python | Shape |
+|--------|--------|-------|
+| `t_TEMP` | `build_dff_stack(..., trim=0)` output | `[y,x,time,trial]` |
+| `Mask_resized` | `resize_mask(load_mask(path), 0.5)` | `[y,x]` |
+| `t_TEMP_resized` (masked) | `apply_mask(dff, mask)` | `[y,x,time,trial]` |
+| `global_signal` | `gsr.global_signal(stack)` | `[time]` |
+| `t_TEMP_regressed` | `gsr.regress_global(stack, cfg)` per trial | `[y,x,time]` |
+| `ALL` / `TEMP` | `temp_roi` (22 cols: 11 left, then 11 right) | `[time,22,trial]` |
+
+`n_rois` = `len(cfg.boxes)`: 4 for `CEREBELLUM_4`, 22 for `CORTEX_22`, or whatever
+a custom atlas defines.
 
 ## Windowing (MATLAB inclusive → Python slice)
 

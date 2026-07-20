@@ -32,15 +32,19 @@ streamed away), so step-2 visualization needs the in-memory path instead.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from .config import ROIConfig
+from .gsr import GSRConfig
 from .io import FrameSource, tiff_frame_source
+from .mask import valid_from_mask
+from .profiles import Profile
 from .resize import imresize_box
-from .roi import _box_slices, functional_connectivity
+from .roi import box_slices_for, functional_connectivity
 
 
 @dataclass
@@ -51,10 +55,10 @@ class StreamingResult:
     corrected stack is never materialised (that is the whole point of streaming).
     """
 
-    temp_roi: np.ndarray         # TEMP_ROI        [time, 4, trial]
-    R: np.ndarray                # per-trial       [4, 4, trial]
-    R_mean: np.ndarray           # trial mean      [4, 4]
-    averaged_traces: np.ndarray  # trial mean      [time, 4]
+    temp_roi: np.ndarray         # TEMP_ROI        [time, n_rois, trial]
+    R: np.ndarray                # per-trial       [n_rois, n_rois, trial]
+    R_mean: np.ndarray           # trial mean      [n_rois, n_rois]
+    averaged_traces: np.ndarray  # trial mean      [time, n_rois]
 
 
 def _as_frame_source(channel: FrameSource | str | Path) -> FrameSource:
@@ -92,8 +96,12 @@ def stream_trial_roi(
     baseline_slice: slice = slice(None),
     trim: int = 20,
     downsample: float = 0.5,
+    mask: np.ndarray | None = None,
+    gsr: GSRConfig | None = None,
+    mask_threshold: float = 0.0,
+    expected_grid: tuple[int, int] | None = None,
 ) -> np.ndarray:
-    """Stream one ``(gcamp, emo)`` trial from disk to its ``[time, 4]`` ROI trace.
+    """Stream one ``(gcamp, emo)`` trial from disk to its ``[time, n_rois]`` trace.
 
     Constant memory: only the two running-sum images (pass 1) and the current
     frame plus the two mean images (pass 2) are ever resident.
@@ -107,16 +115,28 @@ def stream_trial_roi(
         accepted and treated as a multi-page TIFF, for the original call style.
         The storage format is thus decoupled from the streaming math here.
     cfg:
-        ROI geometry (Bregma reference + the four boxes), as for the in-memory
-        path. Box order defines the column order of the returned trace.
+        ROI geometry (Bregma reference + the boxes), as for the in-memory path.
+        Box order defines the column order of the returned trace.
     baseline_slice:
         Temporal window (over the trimmed frames) for the mean baseline image.
         ``slice(None)`` for resting-state, ``slice(0, 278)`` for stimulated.
     trim, downsample:
         Same meaning as :func:`wfci.correction.build_dff_stack`.
+    mask:
+        ``[y, x]`` brain mask at the final (twice-downsampled) resolution. Applied
+        per frame, which is identical to masking the whole stack because the
+        decision is per pixel and constant in time.
+    gsr:
+        Global signal regression config, or None.
+    mask_threshold:
+        See :func:`wfci.mask.valid_from_mask`.
+    expected_grid:
+        The final ``(rows, cols)`` the ROI atlas was drawn for; see
+        :func:`wfci.roi.box_slices_for`. None skips the check.
     """
     gcamp_src = _as_frame_source(gcamp)
     emo_src = _as_frame_source(emo)
+    invalid = None if mask is None else ~valid_from_mask(mask, mask_threshold)
     # Frame count after trimming; both channels are assumed equal length, so we
     # take the shorter one to stay in lockstep.
     n_total = min(gcamp_src.count, emo_src.count)
@@ -143,9 +163,20 @@ def stream_trial_roi(
     mean_f = sum_f / count  # MIf
     mean_r = sum_r / count  # MIr
 
-    # Precompute ROI box slices once (they live on the final quarter-res frame).
-    names = list(cfg.boxes.keys())
-    box_slices = [_box_slices(cfg.boxes[name], cfg.y_1, cfg.x_2) for name in names]
+    # Precompute + validate the ROI box slices once, against the final
+    # quarter-res grid they will be applied to. The frame shape is known now
+    # (mean_f was built at that resolution) rather than only inside the loop, so a
+    # geometry error surfaces before pass 2 reads the file a second time.
+    final_shape = imresize_box(mean_f, downsample).shape
+    resolved = box_slices_for(cfg, final_shape, expected_grid)
+    names = [name for name, _, _ in resolved]
+    box_slices = [(rs, cs) for _, rs, cs in resolved]
+
+    if gsr is not None:
+        return _stream_pass2_gsr(
+            gcamp_src, emo_src, mean_f, mean_r, n_time, trim, downsample,
+            box_slices, invalid, gsr,
+        )
 
     # --- pass 2: per-frame correction -> ROI means ---------------------------
     temp_roi = np.empty((n_time, len(names)), dtype=np.float64)
@@ -158,9 +189,186 @@ def stream_trial_roi(
         dff_half = ((g_half / mean_f) / (e_half / mean_r) - 1.0) * 100.0
         # Second 0.5x box downsample (per-frame == whole-stack slice).
         dff_q = imresize_box(dff_half, downsample)
+        if invalid is not None:
+            _check_mask_shape(invalid, dff_q)
+            dff_q = np.where(invalid, np.nan, dff_q)
         for j, (rs, cs) in enumerate(box_slices):
             temp_roi[idx, j] = np.nanmean(dff_q[rs, cs])
     return temp_roi
+
+
+def _check_mask_shape(invalid: np.ndarray, frame: np.ndarray) -> None:
+    if invalid.shape != frame.shape:
+        raise ValueError(
+            f"Mask shape {invalid.shape} does not match the corrected frame's "
+            f"{frame.shape}. The mask must be at the FINAL (twice-downsampled) "
+            f"resolution -- see wfci.pipeline.prepare_mask."
+        )
+
+
+def _stream_pass2_gsr(
+    gcamp_src: FrameSource,
+    emo_src: FrameSource,
+    mean_f: np.ndarray,
+    mean_r: np.ndarray,
+    n_time: int,
+    trim: int,
+    downsample: float,
+    box_slices: list[tuple[slice, slice]],
+    invalid: np.ndarray | None,
+    gsr: GSRConfig,
+) -> np.ndarray:
+    """Pass 2 with global signal regression, in constant memory.
+
+    GSR looks fundamentally anti-streaming: it regresses **each pixel's whole
+    time-series** against the global signal, which naively means holding
+    ``[y, x, time]`` resident -- destroying the property that makes this module
+    worth having. It doesn't, for two reasons.
+
+    **1. Per-pixel OLS needs only sufficient statistics**, all accumulable one
+    frame at a time: ``N``, ``sum(g)``, ``sum(g^2)`` (scalars) and ``sum(p)``,
+    ``sum(g*p)`` (two ``[y, x]`` images). The global signal ``g(t)`` is a
+    *spatial* mean of frame ``t``, so it is known at frame ``t`` -- no lookahead.
+
+    **2. The ROI mean is linear and ``g(t)`` is one scalar per frame**, so the
+    regressed ROI trace never needs the regressed *stack*::
+
+        T_B(t) = mean_B( p(t) - a*g(t) - b )
+               = mean_B(p(t)) - g(t)*mean_B(a) - mean_B(b)
+
+    Every term is either accumulated per frame (``mean_B(p(t))``, ``g(t)``) or
+    computed once at the end from the two stat images (``mean_B(a)``,
+    ``mean_B(b)``).
+
+    So GSR costs two extra ``[y, x]`` images and two ``[time]`` vectors, and the
+    pass count stays at TWO -- which the decode-count test in
+    ``tests/test_efficiency_invariants.py`` enforces.
+
+    The precondition is that the invalid-pixel set is **static over time**; it is
+    checked here rather than assumed. See :func:`_check_static_nans`.
+    """
+    n_rois = len(box_slices)
+    sum_p = sum_gp = nan_count = None
+    g_vec = np.empty(n_time, dtype=np.float64)
+    raw_roi = np.empty((n_time, n_rois), dtype=np.float64)
+
+    g_stream = _half_res_frames(gcamp_src, trim, downsample)
+    e_stream = _half_res_frames(emo_src, trim, downsample)
+    for idx, (g_half, e_half) in enumerate(zip(g_stream, e_stream)):
+        if idx >= n_time:
+            break
+        dff_half = ((g_half / mean_f) / (e_half / mean_r) - 1.0) * 100.0
+        dff_q = imresize_box(dff_half, downsample)
+        if invalid is not None:
+            _check_mask_shape(invalid, dff_q)
+            dff_q = np.where(invalid, np.nan, dff_q)
+
+        if sum_p is None:
+            sum_p = np.zeros_like(dff_q)
+            sum_gp = np.zeros_like(dff_q)
+            nan_count = np.zeros(dff_q.shape, dtype=np.int64)
+
+        bad = ~np.isfinite(dff_q)
+        nan_count += bad
+
+        # Two views of the same frame, so every reduction below excludes exactly
+        # the non-finite pixels -- NaN *and* inf -- matching what the in-memory
+        # path does (wfci.gsr drops any pixel that is not finite, and its global
+        # signal averages only finite pixels). Plain np.nanmean would not: it
+        # ignores NaN but propagates inf.
+        clean = np.where(bad, 0.0, dff_q)      # for the running sums: finite
+        masked = np.where(bad, np.nan, dff_q)  # for the nanmeans: inf -> NaN
+
+        n_finite = dff_q.size - int(bad.sum())
+        if n_finite == 0:
+            raise ValueError(
+                f"The global signal is undefined at frame {idx}: it has no valid "
+                f"pixels at all. Check the brain mask and the input data."
+            )
+        g_t = float(clean.sum()) / n_finite    # the global signal, frame t
+        g_vec[idx] = g_t
+
+        with warnings.catch_warnings():
+            # A fully-masked ROI box is all-NaN -- a legitimate NaN column, just as
+            # in the in-memory path.
+            warnings.simplefilter("ignore", RuntimeWarning)
+            for j, (rs, cs) in enumerate(box_slices):
+                raw_roi[idx, j] = np.nanmean(masked[rs, cs])
+
+        # Zero-filled at the invalid pixels so the sums stay finite; their a/b are
+        # overwritten with NaN below, so the zeros never reach a result.
+        sum_p += clean
+        sum_gp += g_t * clean
+
+    _check_static_nans(nan_count, n_time)
+    valid = nan_count == 0
+
+    # The OLS fit, from the accumulated statistics. g(t) was kept in full (it is
+    # only [time] floats), so the mean and variance of g are computed from it
+    # directly rather than from sum(g)/sum(g^2): the centred form is what the
+    # in-memory path uses, and reproducing it keeps the two paths agreeing to
+    # roundoff instead of to catastrophic-cancellation error.
+    g_mean = g_vec.mean()
+    g_centred = g_vec - g_mean
+    g_var = float(g_centred @ g_centred)
+    if g_var <= gsr.min_variance:
+        raise ValueError(
+            f"The global signal has no variance (sum of squares {g_var:.3g}), so "
+            f"no slope is identifiable. This usually means a constant or "
+            f"single-frame recording."
+        )
+
+    # sum_t (g(t) - gbar) * p(t) == sum(g*p) - gbar*sum(p), i.e. N*cov(g, p).
+    cov = sum_gp - g_mean * sum_p
+    a = cov / g_var
+    b = sum_p / n_time - a * g_mean
+    a[~valid] = np.nan
+    b[~valid] = np.nan
+
+    # T_B(t) = raw_B(t) - g(t)*mean_B(a) - mean_B(b)
+    temp_roi = np.empty((n_time, n_rois), dtype=np.float64)
+    with warnings.catch_warnings():
+        # A fully-masked box is all-NaN; that is a legitimate NaN column, exactly
+        # as the in-memory path produces.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for j, (rs, cs) in enumerate(box_slices):
+            mean_a = np.nanmean(a[rs, cs])
+            mean_b = np.nanmean(b[rs, cs])
+            temp_roi[:, j] = raw_roi[:, j] - g_vec * mean_a - mean_b
+    return temp_roi
+
+
+def _check_static_nans(nan_count: np.ndarray, n_time: int) -> None:
+    """Refuse to stream GSR when a pixel is NaN for only SOME frames.
+
+    The two-pass identity computes each frame's ROI mean *during* pass 2, but
+    ``nan_policy="drop_pixel"`` decides validity from the pixel's WHOLE
+    time-series. If a pixel is valid in some frames and NaN in others, streaming
+    would include it wherever it happens to be valid, while the in-memory path
+    excludes it from every frame. The two would then disagree -- subtly, and only
+    on real data.
+
+    Under mask-only NaNs the invalid set is static and the identity is exact. A
+    partially-NaN pixel means something else produced NaNs mid-recording (e.g. a
+    zero in ``emo(t)`` making the ratio non-finite).
+
+    The in-memory result is the one that is right (MERGING_PLAN.md P1), so this
+    raises rather than silently returning different numbers.
+    """
+    partial = (nan_count > 0) & (nan_count < n_time)
+    if not partial.any():
+        return
+    n_partial = int(partial.sum())
+    ys, xs = np.nonzero(partial)
+    example = f"(y={ys[0]}, x={xs[0]}) is NaN in {int(nan_count[ys[0], xs[0]])}/{n_time} frames"
+    raise ValueError(
+        f"Cannot stream GSR: {n_partial} pixel(s) are NaN in some frames but not "
+        f"all -- e.g. {example}. Streaming GSR requires the invalid-pixel set to "
+        f"be static over time (it holds for mask-only NaNs); a partially-NaN pixel "
+        f"would be treated differently here than by the in-memory path, which "
+        f"drops such pixels entirely. Re-run with streaming disabled "
+        f"(--no-streaming) to get the correct, in-memory result."
+    )
 
 
 def run_streaming(
@@ -170,22 +378,61 @@ def run_streaming(
     corr_window: slice = slice(None),
     trim: int = 20,
     downsample: float = 0.5,
+    mask: np.ndarray | None = None,
+    gsr: GSRConfig | None = None,
+    mask_threshold: float = 0.0,
+    expected_grid: tuple[int, int] | None = None,
 ) -> StreamingResult:
-    """Streaming steps 1 + 3 over a list of ``(gcamp, emo)`` trials.
+    """Streaming pipeline over a list of ``(gcamp, emo)`` trials.
 
     Each trial is a pair of :class:`~wfci.io.FrameSource` objects (or bare TIFF
-    paths, treated as multi-page files). It is streamed to its ``[time, 4]`` ROI
-    trace (constant memory); only the tiny per-trial traces are stacked, then the
-    usual per-trial 4x4 correlation and trial averaging run on them.
+    paths, treated as multi-page files). It is streamed to its ``[time, n_rois]``
+    ROI trace (constant memory); only the tiny per-trial traces are stacked, then
+    the usual per-trial correlation and trial averaging run on them.
+
+    ``mask`` / ``gsr`` mirror :func:`wfci.pipeline.run_pipeline`'s optional stages;
+    the mask must already be at the final resolution (see
+    :func:`wfci.pipeline.prepare_mask`).
     """
     traces = [
-        stream_trial_roi(g, e, cfg, baseline_slice, trim, downsample)
+        stream_trial_roi(
+            g, e, cfg, baseline_slice, trim, downsample,
+            mask=mask, gsr=gsr, mask_threshold=mask_threshold,
+            expected_grid=expected_grid,
+        )
         for g, e in trial_sources
     ]
-    # [time, 4, trial]
+    # [time, n_rois, trial]
     temp_roi = np.stack(traces, axis=-1)
     R, R_mean, averaged_traces = functional_connectivity(temp_roi, window=corr_window)
     return StreamingResult(temp_roi, R, R_mean, averaged_traces)
+
+
+def run_streaming_profile(
+    trial_sources,
+    cfg: ROIConfig,
+    profile: Profile,
+    mask: np.ndarray | None = None,
+) -> StreamingResult:
+    """Streaming counterpart of :func:`wfci.pipeline.run_profile`.
+
+    Same profile, same numbers, constant memory -- the storage x memory x profile
+    axes stay independent, so any profile runs either way.
+    """
+    from .pipeline import prepare_mask
+
+    cfg = ROIConfig(y_1=cfg.y_1, x_2=cfg.x_2, boxes=dict(profile.atlas))
+    return run_streaming(
+        trial_sources,
+        cfg,
+        baseline_slice=profile.baseline,
+        corr_window=profile.corr_window,
+        trim=profile.trim,
+        downsample=profile.downsample,
+        mask=prepare_mask(mask, profile),
+        gsr=profile.gsr,
+        expected_grid=profile.atlas.grid,
+    )
 
 
 def run_streaming_resting_state(trial_sources, cfg, **kwargs) -> StreamingResult:
