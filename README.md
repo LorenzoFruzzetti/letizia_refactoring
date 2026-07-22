@@ -59,6 +59,10 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"   # Git Bash
 | **Cortical pipeline (22 ROIs, mask + GSR)** | `conda run -n letizia python run_pipeline.py --source interleaved_folder --streaming --profile cortical_gsr --mask mask.tif --trial /path/folder --bregma-row 126 --bregma-col 126` |
 | Force the interleaved channel order (skip the brightness guess) | `conda run -n letizia python run_pipeline.py --source interleaved_folder --profile cortical_gsr --mask mask.tif --channel-order emo_first --trial /path/folder --bregma-row 126 --bregma-col 126` |
 | Debug run: only the first N frames per channel | `conda run -n letizia python run_pipeline.py --source interleaved_folder --no-streaming --profile cerebellar_rs --trial data --bregma-row 121 --bregma-col 134 --debug-max-frames 60` |
+| **Place the ROIs / Bregma by eye** (interactive window) | `conda run --no-capture-output -n letizia python roi_editor.py` |
+| Run one interleaved folder with the ROIs you drew | `conda run -n letizia python run_intermingle_rs.py --roi-set roi_sets/260611_R1.yaml --full` |
+| Run the manifest batch, one ROI set per animal | `conda run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full` |
+| Run the manifest batch, the same ROIs for every session | `conda run -n letizia python run_botox_batch.py --roi-set roi_sets/shared_roi_set.yaml --full` |
 | Runnable example on sample data | `conda run -n letizia python examples/run_example.py` |
 | Worked group-contrast study (cohort → DIFF → figures) | `conda run -n letizia python experiments/healthy_vs_disease_day4.py` |
 | Benchmark all 4 layouts (RAM, time, cross-layout + MATLAB parity) | `conda run -n letizia python benchmarks/benchmark_modalities.py` |
@@ -236,6 +240,13 @@ So the library never *requires* its presets. `CEREBELLUM_4` and `CORTEX_22` are
 validated defaults that reproduce the two MATLAB pipelines; a study can bring its
 own layout and keep it in a file it owns, next to its Bregma values and trial
 list.
+
+**Drawing it by eye.** [`roi_editor.py`](roi_editor.py) shows the first image of each
+recording on the final analysis grid and lets you drag the boxes and Bregma onto the
+anatomy, then writes a **ROI set** — an atlas file plus the Bregma the boxes were
+drawn from — that `run_intermingle_rs.py` (`--roi-set`) and `run_botox_batch.py`
+(`--roi-set-dir` per animal, or `--roi-set` for one shared layout) load directly. Full
+walkthrough: [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md).
 
 Export a preset as a starting point, edit it, run it:
 
@@ -423,6 +434,13 @@ letizia/
 ├── CLAUDE.md                 ← agent/operating conventions
 ├── pyproject.toml            ← package metadata (installs `wfci` from src/)
 ├── run_pipeline.py           ← editor/CLI entrypoint (RUN_CONFIG block)
+├── roi_editor.py             ← interactive ROI/Bregma editor → roi_sets/*.yaml
+├── run_intermingle_rs.py     ← one interleaved folder, RS connectivity (study script)
+├── run_botox_batch.py        ← BOTOX manifest batch, merges t1..tn per animal
+├── scan_botox_dataset.py     ← builds manifests/botox_restani_manifest.csv
+├── roi_sets/                 ← ROI sets drawn with roi_editor.py (boxes + Bregma)
+├── manifests/                ← dataset manifests (CSV)
+├── docs/                     ← study write-ups (ROI_EDITOR.md, INTERMINGLE_RS_R1_t1.md)
 ├── .env/                     ← environment contract
 │   ├── environment.yml       ← conda env `letizia`
 │   ├── requirements.txt      ← pip deps

@@ -352,3 +352,14 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   `--streaming/--no-streaming` (any source × either memory strategy).
 - Example: `examples/run_example.py`.
 - Benchmark: `benchmarks/benchmark_modalities.py` (`RUN_CONFIG` block + argparse).
+- Study scripts (root, `RUN_CONFIG` block + argparse): `scan_botox_dataset.py`
+  (dataset → `manifests/*.csv`), `run_intermingle_rs.py` (one interleaved folder),
+  `run_botox_batch.py` (manifest batch, merges each animal's `t1..tn`).
+- ROI geometry utility: `roi_editor.py` — interactive placement of the ROI boxes and
+  Bregma on the first image of each recording (rendered on the final analysis grid),
+  writing `roi_sets/<key>.yaml`. That file is an atlas file plus `bregma_row` /
+  `bregma_col`, so `wfci.load_atlas` reads it unchanged; `roi_editor.load_roi_set`
+  returns `(atlas, bregma_row, bregma_col)`. The run scripts take it via
+  `--roi-set` (one file) or `--roi-set-dir` (per `<day>_<animal>`), applied with
+  `run_intermingle_rs.apply_roi_set`, which `dataclasses.replace`s the profile's
+  atlas. See `docs/ROI_EDITOR.md`.

@@ -166,6 +166,10 @@ Needs access to a real folder; it won't run on the tiny sample.
 | [benchmarks/benchmark_modalities.py](benchmarks/benchmark_modalities.py) | Compare the 4 layouts on time/RAM/correctness. |
 | [benchmarks/benchmark_scaling.py](benchmarks/benchmark_scaling.py) | Estimate time/RAM for a big folder from short runs. |
 | [src/inspect_channel_intensity.py](src/inspect_channel_intensity.py) | Utility: inspect an interleaved folder's odd/even channel brightness (which is GCaMP?). Writes a CSV. |
+| [roi_editor.py](roi_editor.py) | **Utility (opens a window).** Shows the first image of each recording on the analysis grid; drag the ROI boxes and Bregma onto the anatomy and save a ROI set. See [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md). |
+| [run_intermingle_rs.py](run_intermingle_rs.py) | Study script: RS connectivity on ONE interleaved folder (`--roi-set` to use drawn ROIs). |
+| [run_botox_batch.py](run_botox_batch.py) | Study script: the BOTOX manifest batch, merging each animal's `t1..tn` (`--roi-set-dir` / `--roi-set`). |
+| [scan_botox_dataset.py](scan_botox_dataset.py) | Study script: scans the dataset share and writes `manifests/botox_restani_manifest.csv`. |
 
 ### The library (`src/wfci/`) — imported, not run
 
@@ -238,6 +242,15 @@ Export a preset to a file, edit it (one line per ROI), and pass it in:
     --trial /path/folder --bregma-row 126 --bregma-col 126
 ```
 Details and the file format: [README: bringing your own ROI atlas](README.md#bringing-your-own-roi-atlas).
+
+### …move the ROIs / Bregma onto *this* animal's anatomy
+Draw them instead of guessing coordinates:
+```bash
+"$CONDA" run --no-capture-output -n letizia python roi_editor.py   # window: drag, then 's'
+"$CONDA" run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full
+```
+Press `A` then `w` in the editor to write ONE layout used by every session instead.
+Full walkthrough: [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md).
 
 ### …compare groups of animals (healthy vs disease)
 Copy [experiments/healthy_vs_disease_day4.py](experiments/healthy_vs_disease_day4.py),
