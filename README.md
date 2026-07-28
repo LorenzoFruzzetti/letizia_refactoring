@@ -61,8 +61,10 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"   # Git Bash
 | Debug run: only the first N frames per channel | `conda run -n letizia python run_pipeline.py --source interleaved_folder --no-streaming --profile cerebellar_rs --trial data --bregma-row 121 --bregma-col 134 --debug-max-frames 60` |
 | **Place the ROIs / Bregma by eye** (interactive window) | `conda run --no-capture-output -n letizia python roi_editor.py` |
 | Run one interleaved folder with the ROIs you drew | `conda run -n letizia python run_intermingle_rs.py --roi-set roi_sets/260611_R1.yaml --full` |
+| Run every recording under a day/animal folder, each separately | `conda run -n letizia python run_intermingle_rs.py --folder "\\\\146.48.88.209\\share2\\BOTOX_RESTANI\\260611" --output-dir outputs/intermingle_260611` |
 | Run the manifest batch, one ROI set per animal | `conda run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full` |
 | Run the manifest batch, the same ROIs for every session | `conda run -n letizia python run_botox_batch.py --roi-set roi_sets/shared_roi_set.yaml --full` |
+| Run the manifest batch as ONE concatenated trial per animal (instead of one per `t#`) | `conda run -n letizia python run_botox_batch.py --merge-recordings --full` |
 | Runnable example on sample data | `conda run -n letizia python examples/run_example.py` |
 | Worked group-contrast study (cohort → DIFF → figures) | `conda run -n letizia python experiments/healthy_vs_disease_day4.py` |
 | Benchmark all 4 layouts (RAM, time, cross-layout + MATLAB parity) | `conda run -n letizia python benchmarks/benchmark_modalities.py` |
@@ -162,13 +164,13 @@ wrong-resolution mask is an error, not a broadcast.
 
 **`--channel-order` (interleaved folders only):**
 
-- **`auto`** (default): identify the channels by brightness — the brighter group
-  is GCaMP. This is what the package has always done.
+- **`auto`** (default): identify the channels by brightness — the **dimmer**
+  group is GCaMP, the brighter one is the reflectance (emo) channel.
 - **`gcamp_first` / `emo_first`**: assign by position instead, reading no pixels
   at all. The MATLAB scripts do this implicitly (cerebellar: GCaMP first;
   cortical: emo first), and getting it wrong **silently swaps the channels** and
   inverts the hemodynamic correction. Use these only when you know the layout and
-  the brightness heuristic misfires (e.g. an unusually dim GCaMP recording).
+  the brightness heuristic misfires (e.g. an unusually bright GCaMP recording).
 
 **`--source` (storage format):**
 
@@ -181,8 +183,8 @@ wrong-resolution mask is an error, not a broadcast.
 - **`interleaved_folder`**: a **single folder** whose single-page TIFFs hold
   **both channels acquired alternately** — odd-positioned images (1st, 3rd, 5th,
   …) are one channel, even-positioned (2nd, 4th, …) the other. The split assigns
-  the **brighter** group (by mean of the top-10% pixels of the first image in
-  each group) to **gcamp**, the dimmer to **emo**. Full-load uses
+  the **dimmer** group (by mean of the top-10% pixels of the first image in
+  each group) to **gcamp**, the brighter to **emo**. Full-load uses
   `load_interleaved_folder(folder)`. Here each trial is a **single folder path**,
   not a `(gcamp, emo)` pair. The sample `data/` folder is of this kind; inspect
   the split with
@@ -435,8 +437,9 @@ letizia/
 ├── pyproject.toml            ← package metadata (installs `wfci` from src/)
 ├── run_pipeline.py           ← editor/CLI entrypoint (RUN_CONFIG block)
 ├── roi_editor.py             ← interactive ROI/Bregma editor → roi_sets/*.yaml
-├── run_intermingle_rs.py     ← one interleaved folder, RS connectivity (study script)
-├── run_botox_batch.py        ← BOTOX manifest batch, merges t1..tn per animal
+├── run_intermingle_rs.py     ← RS connectivity on interleaved folders, one analysis
+│                               per recording folder found below the input (study script)
+├── run_botox_batch.py        ← BOTOX manifest batch, one analysis per t# recording
 ├── scan_botox_dataset.py     ← builds manifests/botox_restani_manifest.csv
 ├── roi_sets/                 ← ROI sets drawn with roi_editor.py (boxes + Bregma)
 ├── manifests/                ← dataset manifests (CSV)
@@ -444,6 +447,7 @@ letizia/
 ├── .env/                     ← environment contract
 │   ├── environment.yml       ← conda env `letizia`
 │   ├── requirements.txt      ← pip deps
+│   ├── install_linux.sh      ← one-command Linux installer (conda or venv)
 │   ├── .envVariables         ← env vars
 │   └── ENVIRONMENT_SETUP.md  ← setup notes
 ├── .vscode/                  ← interpreter + launch/debug configs
@@ -550,6 +554,8 @@ these numbers. Treat the cortical path as carefully-read, not machine-verified.
 
 ## Environment setup
 
+### Windows (this machine)
+
 ```bash
 CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
 "$CONDA" env create -f .env/environment.yml     # creates env `letizia` (python 3.11)
@@ -557,7 +563,24 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
 "$CONDA" run -n letizia python -m pytest tests/ -s -v   # verify
 ```
 
-Dependencies: `numpy`, `scipy`, `pandas`, `tifffile`, `matplotlib`, `pytest`. See
+### Linux — one command
+
+[`.env/install_linux.sh`](.env/install_linux.sh) creates the environment,
+installs `wfci` in editable mode, verifies every import and runs the test suite:
+
+```bash
+bash .env/install_linux.sh                # conda/mamba/micromamba → env `letizia`
+bash .env/install_linux.sh --mode venv    # no conda: creates .venv/ from requirements.txt
+bash .env/install_linux.sh --force        # recreate from scratch
+bash .env/install_linux.sh --help         # all flags
+```
+
+Then `conda activate letizia` (or `source .venv/bin/activate`).
+
+Dependencies: `numpy`, `scipy`, `pandas`, `tifffile`, `matplotlib`, `pyyaml`,
+`pytest`. [`roi_editor.py`](roi_editor.py) additionally needs Tk — bundled with
+conda-forge Python, but in venv mode install it system-wide
+(`sudo apt install python3-tk`). All other scripts are headless. See
 [.env/ENVIRONMENT_SETUP.md](.env/ENVIRONMENT_SETUP.md) for details.
 
 ---

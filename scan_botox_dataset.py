@@ -6,16 +6,17 @@ in ``wfci``). It walks the three-level folder tree of the resting-state dataset
     <root>\\<day>\\<animal>\\<recording>\\*.tif
       260611  \\   R1    \\    t1     \\  R11_00001.tif ...
 
-and emits ONE row per (day, animal) -- the unit the analysis runs on. The
-consecutive recordings ``t1..tn`` under an animal are the same experiment split
-across acquisitions, so they are listed together in one row and later *merged*
-(fed as the trial list of a single connectivity run) by ``run_botox_batch.py``.
+and emits ONE row per (day, animal), listing that animal's recordings. The row is
+the *bookkeeping* unit; the *analysis* unit is chosen by ``run_botox_batch.py``,
+which by default runs each ``t#`` recording separately (one result per recording)
+and can instead concatenate them into one continuous trial with
+``--merge-recordings``.
 
 Naming convention (given):
     * day     = the numeric top folder (e.g. 260611) -- one acquisition session.
     * animal  = capital ``T#`` / ``R#`` (e.g. T4, R1). The leading letter is the
                 experimental group (T vs R); kept as ``group`` for later selects.
-    * t1..tn  = consecutive recordings of ONE experiment -> merged as trials.
+    * t1..tn  = consecutive recordings of the same animal, listed in one row.
 
 Each recording folder holds single-page 512x512 interleaved TIFFs (odd/even
 positions = the two channels), ~6000 files (=3000 frames/channel) each.

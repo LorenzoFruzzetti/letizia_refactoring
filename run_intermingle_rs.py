@@ -1,13 +1,26 @@
-"""Resting-state functional connectivity on one interleaved ("intermingle") folder.
+"""Resting-state functional connectivity on interleaved ("intermingle") folders.
 
 This is a *study script* (P2 boundary: policy lives here, mechanism lives in
-``wfci``). It runs the cerebellar resting-state pipeline on a single folder of
-interleaved single-page TIFFs -- odd-positioned images are one channel, even the
-other -- and writes the 4x4 connectivity matrix plus a couple of check figures.
+``wfci``). It runs the cerebellar resting-state pipeline on folders of interleaved
+single-page TIFFs -- odd-positioned images are one channel, even the other -- and
+writes the 4x4 connectivity matrix plus a couple of check figures.
 
-Target dataset (edit ``RUN_CONFIG`` for another):
-    \\146.48.88.209\share2\BOTOX_RESTANI\260611\R1\t1
-    6000 single-page 512x512 TIFFs = 3000 frames/channel, ~3 GB.
+``RUN_CONFIG["folder"]`` may be either a single recording folder or any parent of
+several: the script walks down and treats EVERY folder that holds the TIFFs as its
+own recording. Each one is analysed SEPARATELY -- its own channel split, trim,
+baseline and correlation -- and gets its own output folder. Recordings of the same
+animal are never concatenated (use ``run_botox_batch.py --merge-recordings`` if
+that is what you want).
+
+Target dataset (edit ``RUN_CONFIG`` for another) -- one acquisition day:
+    \\146.48.88.209\share2\BOTOX_RESTANI\260611\<animal>\<t#>\*.tif
+       day     ->      animal (R1, R2, T4) -> recording (t1..t5)
+    6000 single-page 512x512 TIFFs per recording = 3000 frames/channel, ~3 GB.
+
+Outputs mirror that tree under ``output_dir``, so nothing overwrites anything:
+    outputs\intermingle_260611\R1\t1\{roi_overlay_debug.png, roi_traces_*.png,
+                                     connectivity_*.npz}
+(A single recording folder as input writes straight into ``output_dir``.)
 
 Two run modes, selected by ``RUN_CONFIG["debug"]``:
 
@@ -16,7 +29,7 @@ Two run modes, selected by ``RUN_CONFIG["debug"]``:
   it can also draw the step-2 ROI-placement overlay -- the visual check that the
   Bregma coordinates put the 4 boxes on the right anatomy. Use this to validate
   the setup before committing to the full recording.
-* ``debug = False`` -- the real run. Streams the whole folder frame-by-frame in
+* ``debug = False`` -- the real run. Streams each folder frame-by-frame in
   constant memory (``run_streaming_profile``, two passes), which is what a ~3 GB
   recording needs. No ``dff_stack`` is retained in this mode (streamed away), so
   no overlay -- confirm placement in the debug run first.
@@ -24,12 +37,16 @@ Two run modes, selected by ``RUN_CONFIG["debug"]``:
 ROI geometry comes from the profile's atlas + ``bregma_row``/``bregma_col`` unless
 ``RUN_CONFIG["roi_set"]`` (or ``--roi-set``) points at a ROI-set YAML drawn with
 ``roi_editor.py``; that file carries both the boxes and the Bregma they were drawn
-from, and then supplies both.
+from, and then supplies both. One geometry is used for EVERY discovered recording,
+which is right for the t# of one animal but not across animals -- for per-animal
+Bregma, run one animal folder at a time (or use ``run_botox_batch.py``, whose
+manifest carries a Bregma per animal).
 
 Run it:
     conda run -n letizia python run_intermingle_rs.py                 # editor mode, uses RUN_CONFIG
     conda run -n letizia python run_intermingle_rs.py --full          # force the full streaming run
     conda run -n letizia python run_intermingle_rs.py --debug-frames 80
+    conda run -n letizia python run_intermingle_rs.py --folder \\146.48.88.209\share2\BOTOX_RESTANI\260611\R1
     conda run -n letizia python run_intermingle_rs.py --roi-set roi_sets\260611_R1.yaml --full
 
 No CLI flags are needed -- edit ``RUN_CONFIG`` and run. Errors are intentionally
@@ -43,6 +60,7 @@ import itertools
 import os
 import sys
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -64,20 +82,27 @@ from roi_editor import load_roi_set
 # Edit this section to run without CLI flags.
 # ---------------------------------------------------------------------------
 RUN_CONFIG: dict[str, Any] = {
-    # The single interleaved folder for one trial (odd/even = the two channels).
-    # UNC path as a raw string so the backslashes are not read as escapes.
-    "folder": r"\\146.48.88.209\share2\BOTOX_RESTANI\260611\R1\t1",
+    # Where the interleaved TIFFs live (odd/even = the two channels). Either ONE
+    # recording folder, or a parent of several -- an animal (R1 -> t1..t5) or a
+    # whole day (260611 -> R1/R2/T4 -> t1..t5). Every folder holding TIFFs below
+    # this one is analysed on its own. UNC path as a raw string so the backslashes
+    # are not read as escapes.
+    "folder": r"\\146.48.88.209\share2\BOTOX_RESTANI\260611",
+    # Glob used both to find the recording folders and to read them.
+    "pattern": "*.tif",
     # Which pipeline: cerebellar resting state (4 ROIs, full-recording baseline
     # and correlation window). The intermingle modality is the cerebellar port.
     "profile": "cerebellar_rs",
-    # Channel assignment for the interleaved split. "auto" picks the brighter
-    # group (top-10% pixel intensity) as GCaMP; for this dataset the odd frames
-    # (R11_00001, 00003, ...) are the bright GCaMP channel, so "auto" is correct.
+    # Channel assignment for the interleaved split. "auto" picks the DIMMER
+    # group (top-10% pixel intensity) as GCaMP -- on this rig the reflectance
+    # (emo) channel is the brighter of the two.
     "channel_order": "auto",
-    # Per-animal Bregma at FULL resolution (floor(.../2) is applied internally to
-    # land on the downsampled grid). VERIFY these against the ROI overlay the debug
-    # run writes before trusting the full run's numbers -- ROI placement is the
-    # one thing this script cannot check for you.
+    # Bregma at FULL resolution (floor(.../2) is applied internally to land on the
+    # downsampled grid). VERIFY these against the ROI overlay the debug run writes
+    # before trusting the full run's numbers -- ROI placement is the one thing this
+    # script cannot check for you. NOTE these coordinates apply to EVERY recording
+    # discovered below "folder": right for one animal's t1..tn, but across animals
+    # run one animal folder at a time (Bregma moves between animals).
     "bregma_row": 121,
     "bregma_col": 134,
     # Optional ROI set written by roi_editor.py: a YAML holding the ROI boxes AND
@@ -89,21 +114,25 @@ RUN_CONFIG: dict[str, Any] = {
     #        r"roi_sets\shared_roi_set.yaml" (the same layout for every session)
     "roi_set": None,
     # Debug smoke test vs the real streaming run.
-    "debug": True,
+    "debug": False,
     # Debug only: frames PER CHANNEL to load (reads the folder's first 2*N images,
     # since they alternate). Must exceed the profile's 20-frame trim; keep it small
     # for a quick check but large enough that a correlation means something.
     "debug_max_frames": 60,
-    # Where the .npz result and check figures go (created if missing).
-    "output_dir": "outputs/intermingle_R1_t1",
+    # Root for the results. Each recording gets its own subfolder mirroring its
+    # path below "folder" (e.g. R1\t1), so recordings never overwrite each other.
+    # A single recording folder as input writes straight into this directory.
+    "output_dir": "outputs/intermingle_260611",
     "prefer_cli_args": True,
 }
 
 
 def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     """Minimal CLI overrides for the few knobs worth flipping from the terminal."""
-    p = argparse.ArgumentParser(description="Resting-state FC on one interleaved folder.")
-    p.add_argument("--folder", default=defaults["folder"], help="Interleaved TIFF folder.")
+    p = argparse.ArgumentParser(description="Resting-state FC on interleaved folders.")
+    p.add_argument("--folder", default=defaults["folder"],
+                   help="Interleaved TIFF folder, or a parent of several (day/animal).")
+    p.add_argument("--pattern", default=defaults["pattern"], help="TIFF glob.")
     p.add_argument("--bregma-row", type=int, default=defaults["bregma_row"])
     p.add_argument("--bregma-col", type=int, default=defaults["bregma_col"])
     p.add_argument("--output-dir", default=defaults["output_dir"])
@@ -131,6 +160,7 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         return parse_args(defaults=config)
     return argparse.Namespace(
         folder=config["folder"],
+        pattern=config["pattern"],
         profile=config["profile"],
         channel_order=config["channel_order"],
         bregma_row=config["bregma_row"],
@@ -179,6 +209,28 @@ def _load_limited_trial(gcamp_files, emo_files, limit):
     return gcamp, emo
 
 
+def discover_recordings(root: str | Path, pattern: str) -> list[Path]:
+    """Find every interleaved recording folder at or below ``root``, sorted.
+
+    A folder counts as a recording when it directly holds at least 2 images
+    matching ``pattern`` -- the minimum an interleaved split needs. That single
+    rule handles all three input levels of this dataset without hard-coding the
+    ``day\\animal\\t#`` depth: a recording folder returns itself, an animal folder
+    returns its t1..tn, a day folder returns every animal's recordings. Folders
+    holding images are never descended into, so a stray subfolder inside a
+    recording cannot turn into a second one.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        raise NotADirectoryError(f"Not a folder: {root}")
+    if len(sorted(root.glob(pattern))) >= 2:
+        return [root]
+    found: list[Path] = []
+    for sub in sorted(p for p in root.iterdir() if p.is_dir()):
+        found.extend(discover_recordings(sub, pattern))
+    return found
+
+
 def _save_overlay(dff_stack, cfg, profile, out_path):
     """Draw the step-2 ROI-placement overlay on a representative DFF frame.
 
@@ -218,29 +270,22 @@ def _save_traces(averaged_traces, labels, out_path):
     plt.close(fig)
 
 
-def main() -> None:
-    args = build_runtime_args()
-    os.makedirs(args.output_dir, exist_ok=True)
+def run_one_recording(folder: Path, cfg, profile, args):
+    """Analyse ONE interleaved folder end to end and return the pipeline result.
 
-    profile = get_profile(args.profile)
-    # An optional ROI set overrides both the atlas and the Bregma (see apply_roi_set).
-    profile, bregma_row, bregma_col = apply_roi_set(
-        profile, args.bregma_row, args.bregma_col, args.roi_set
-    )
-    # The profile supplies the ROI atlas; cfg carries only the per-animal Bregma.
-    cfg = ROIConfig.from_bregma(bregma_row, bregma_col, boxes=dict(profile.atlas))
-
+    Everything here is per-recording: the channel split, the profile's own trim,
+    the baseline and the correlation window. Nothing is shared with the other
+    recordings of the same animal -- that separation is the point (see the module
+    docstring); ``run_botox_batch.py --merge-recordings`` is the concatenating one.
+    """
     # Split the interleaved folder into two channel file lists. Decodes exactly two
-    # images to decide which group is brighter (=GCaMP); nothing large is read here.
+    # images to decide which group is dimmer (=GCaMP); nothing large is read here.
     gcamp_files, emo_files = interleaved_channel_files(
-        args.folder, channel_order=args.channel_order
+        folder, pattern=args.pattern, channel_order=args.channel_order
     )
     n_per_channel = min(len(gcamp_files), len(emo_files))
-    print(f"Folder : {args.folder}")
-    print(f"Split  : {len(gcamp_files)} gcamp + {len(emo_files)} emo images "
+    print(f"  Split  : {len(gcamp_files)} gcamp + {len(emo_files)} emo images "
           f"({n_per_channel} frames/channel), channel_order={args.channel_order}")
-    print(f"Bregma : row={bregma_row}, col={bregma_col}  "
-          f"(downsampled y_1={cfg.y_1}, x_2={cfg.x_2})")
 
     if args.debug:
         limit = min(args.debug_frames, n_per_channel)
@@ -249,29 +294,32 @@ def main() -> None:
                 f"debug_frames={limit} is at or below the profile's {profile.trim}-frame "
                 f"trim; nothing left to correlate. Use a larger value."
             )
-        print(f"Mode   : DEBUG (in-memory) -- first {limit} frames/channel")
+        print(f"  Mode   : DEBUG (in-memory) -- first {limit} frames/channel")
         trials = [_load_limited_trial(gcamp_files, emo_files, limit)]
-        result = run_profile(trials, cfg, profile)
-        # RAM mode keeps dff_stack -> we can draw the placement overlay.
-        overlay_path = os.path.join(args.output_dir, "roi_overlay_debug.png")
-        _save_overlay(result.dff_stack, cfg, profile, overlay_path)
-        print(f"Overlay: {overlay_path}  <- CHECK the boxes sit on the anatomy")
-    else:
-        print("Mode   : FULL (streaming, constant memory, two passes)")
-        sources = [(folder_frame_source(gcamp_files), folder_frame_source(emo_files))]
-        result = run_streaming_profile(sources, cfg, profile)
+        return run_profile(trials, cfg, profile)
 
+    print("  Mode   : FULL (streaming, constant memory, two passes)")
+    sources = [(folder_frame_source(gcamp_files), folder_frame_source(emo_files))]
+    return run_streaming_profile(sources, cfg, profile)
+
+
+def save_outputs(result, out_dir: str, cfg, profile, args, bregma_row, bregma_col) -> str:
+    """Write this recording's figures and .npz into ``out_dir``; return the npz path."""
+    os.makedirs(out_dir, exist_ok=True)
     labels = profile.labels
-    print(f"\nR_mean ({profile.n_rois}x{profile.n_rois}), ROI order {labels}:")
-    print(np.array2string(result.R_mean, precision=4, suppress_small=True))
 
-    traces_path = os.path.join(args.output_dir, "roi_traces_debug.png" if args.debug
+    # Only the RAM (debug) mode keeps dff_stack, so only it can draw the overlay.
+    if getattr(result, "dff_stack", None) is not None:
+        overlay_path = os.path.join(out_dir, "roi_overlay_debug.png")
+        _save_overlay(result.dff_stack, cfg, profile, overlay_path)
+        print(f"  Overlay: {overlay_path}  <- CHECK the boxes sit on the anatomy")
+
+    traces_path = os.path.join(out_dir, "roi_traces_debug.png" if args.debug
                                else "roi_traces_full.png")
     _save_traces(result.averaged_traces, labels, traces_path)
-    print(f"Traces : {traces_path}")
+    print(f"  Traces : {traces_path}")
 
-    # Save the arrays. Streaming has no dff_stack, so only include it when present.
-    npz_path = os.path.join(args.output_dir,
+    npz_path = os.path.join(out_dir,
                             "connectivity_debug.npz" if args.debug else "connectivity_full.npz")
     arrays = dict(
         temp_roi=result.temp_roi,
@@ -287,7 +335,63 @@ def main() -> None:
     if getattr(result, "dff_stack", None) is not None:
         arrays["dff_stack"] = result.dff_stack
     np.savez(npz_path, **arrays)
-    print(f"Saved  : {npz_path}")
+    print(f"  Saved  : {npz_path}")
+    return npz_path
+
+
+def _mean_offdiag(R_mean) -> float:
+    """Mean of the off-diagonal correlations -- one number to compare recordings by."""
+    n = R_mean.shape[0]
+    off = ~np.eye(n, dtype=bool)
+    return float(np.nanmean(R_mean[off]))
+
+
+def main() -> None:
+    args = build_runtime_args()
+
+    profile = get_profile(args.profile)
+    # An optional ROI set overrides both the atlas and the Bregma (see apply_roi_set).
+    profile, bregma_row, bregma_col = apply_roi_set(
+        profile, args.bregma_row, args.bregma_col, args.roi_set
+    )
+    # The profile supplies the ROI atlas; cfg carries only the per-animal Bregma.
+    # It is built once and reused: every recording found below "folder" is analysed
+    # with the SAME geometry (see the module docstring's caveat about animals).
+    cfg = ROIConfig.from_bregma(bregma_row, bregma_col, boxes=dict(profile.atlas))
+
+    root = Path(args.folder)
+    recordings = discover_recordings(root, args.pattern)
+    if not recordings:
+        raise FileNotFoundError(
+            f"No folder holding at least 2 {args.pattern!r} images found at or below {root}."
+        )
+
+    print(f"Input  : {root}")
+    print(f"Found  : {len(recordings)} recording(s), analysed separately")
+    print(f"Bregma : row={bregma_row}, col={bregma_col}  "
+          f"(downsampled y_1={cfg.y_1}, x_2={cfg.x_2})")
+
+    summary: list[tuple[str, float, str]] = []
+    for i, folder in enumerate(recordings, start=1):
+        # Mirror the input tree under output_dir so recordings never collide. When
+        # the input IS the recording folder its relative path has no parts, so it
+        # writes straight into output_dir, as this script always did.
+        rel = folder.relative_to(root)
+        label = "/".join(rel.parts) or root.name
+        out_dir = os.path.join(args.output_dir, *rel.parts)
+
+        print(f"\n[{i}/{len(recordings)}] {label}  ({folder})")
+        result = run_one_recording(folder, cfg, profile, args)
+
+        print(f"  R_mean ({profile.n_rois}x{profile.n_rois}), ROI order {profile.labels}:")
+        print(np.array2string(result.R_mean, precision=4, suppress_small=True))
+
+        npz_path = save_outputs(result, out_dir, cfg, profile, args, bregma_row, bregma_col)
+        summary.append((label, _mean_offdiag(result.R_mean), npz_path))
+
+    print(f"\nDone: {len(summary)} recording(s) -> {args.output_dir}")
+    for label, mean_r, npz_path in summary:
+        print(f"  {label:<12} mean off-diagonal R = {mean_r:+.4f}   {npz_path}")
 
 
 if __name__ == "__main__":

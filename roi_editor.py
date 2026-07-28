@@ -108,7 +108,7 @@ RUN_CONFIG: dict[str, Any] = {
     # Pipeline whose ROI atlas is the starting layout (and whose downsampling
     # defines the preview grid).
     "profile": "cerebellar_rs",
-    # Interleaved split: "auto" picks the brighter group as GCaMP. Only the GCaMP
+    # Interleaved split: "auto" picks the dimmer group as GCaMP. Only the GCaMP
     # channel is previewed.
     "channel_order": "auto",
     # How many GCaMP images to average into the preview. 1 = literally the first

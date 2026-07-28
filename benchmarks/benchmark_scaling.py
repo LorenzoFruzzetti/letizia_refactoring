@@ -121,7 +121,7 @@ def _run_worker(args: argparse.Namespace) -> None:
     cfg = ROIConfig.from_bregma(args.bregma_row, args.bregma_col)
 
     t0 = time.perf_counter()
-    # The odd/even split + brighter-group decision reads only two images; time it
+    # The odd/even split + dimmer-group decision reads only two images; time it
     # separately since it is a fixed cost that does NOT grow with the limit.
     gcamp_files, emo_files = interleaved_channel_files(args.folder)
     split_s = time.perf_counter() - t0

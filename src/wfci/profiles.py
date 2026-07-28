@@ -28,11 +28,12 @@ from .atlases import CEREBELLUM_4, CORTEX_22, Atlas, as_atlas
 from .gsr import GSRConfig
 
 # Channel order in an interleaved folder. "auto" identifies the channels by
-# brightness (the brighter group is GCaMP), which is what this package has always
-# done and is more robust than position -- the MATLAB assigned channels purely by
-# their position in the `dir` listing, which is exactly the silent channel-swap
-# risk the Python side set out to remove. The positional options exist to override
-# the heuristic when it is wrong (e.g. an unusually dim GCaMP recording).
+# brightness (the DIMMER group is GCaMP; the reflectance/emo channel comes back
+# brighter on this rig), which is more robust than position -- the MATLAB assigned
+# channels purely by their position in the `dir` listing, which is exactly the
+# silent channel-swap risk the Python side set out to remove. The positional
+# options exist to override the heuristic when it is wrong (e.g. an unusually
+# bright GCaMP recording).
 CHANNEL_ORDERS = ("auto", "gcamp_first", "emo_first")
 
 

@@ -176,7 +176,7 @@ load_interleaved_folder(folder, pattern="*.tif", top_percent=10.0,
 interleaved_channel_files(folder, pattern="*.tif", top_percent=10.0,
                           channel_order="auto") -> (gcamp_files, emo_files)
     # Splits ONE interleaved folder by odd/even position; decodes exactly 2 images
-    # to decide which group is brighter (=gcamp), unless channel_order forces it.
+    # to decide which group is dimmer (=gcamp), unless channel_order forces it.
 
 # Lazy, constant-memory building blocks (streaming path)
 tiff_frame_count(path) -> int                   # IFD headers only, decodes 0 pixels

@@ -9,8 +9,8 @@
 % What it does (identical math to gen_reference.m, single interleaved trial):
 %   1. read the sorted single-page TIFFs in data/ (both channels, alternating);
 %   2. split odd-positioned images (1st,3rd,5th,7th) from even-positioned
-%      (2nd,4th,6th); the brighter group (mean of its top-10% pixels, first image
-%      of each group) becomes gcamp, the dimmer emo; truncate to equal length;
+%      (2nd,4th,6th); the dimmer group (mean of its top-10% pixels, first image
+%      of each group) becomes gcamp, the brighter emo; truncate to equal length;
 %   3. step 1 — trim(=0) -> imresize 0.5 'box' -> DFF -> imresize 0.5 'box';
 %   4. step 3 — 4 ROI nanmean traces -> per-trial corr -> R_mean.
 %
@@ -40,7 +40,7 @@ for k = 1:numel(names)
     raw(:, :, k) = double(imread(fullfile(data_dir, names{k})));   %#ok<AGROW>
 end
 
-%% --- split odd/even and pick the brighter group as gcamp ----------------
+%% --- split odd/even and pick the dimmer group as gcamp ------------------
 odd_idx = 1:2:numel(names);    % 1st, 3rd, 5th, 7th
 even_idx = 2:2:numel(names);   % 2nd, 4th, 6th
 odd = raw(:, :, odd_idx);
@@ -50,7 +50,7 @@ even = raw(:, :, even_idx);
 % (matches wfci.io._top_percent_mean; the odd/even margin is large, so the
 % decision is robust regardless of the exact percentile convention).
 top10_mean = @(img) mean_of_top_percent(img, 10);
-if top10_mean(odd(:, :, 1)) >= top10_mean(even(:, :, 1))
+if top10_mean(odd(:, :, 1)) <= top10_mean(even(:, :, 1))
     gcamp_raw = odd;  emo_raw = even;
 else
     gcamp_raw = even; emo_raw = odd;

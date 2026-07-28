@@ -27,6 +27,12 @@ setup:
 "$CONDA" run -n letizia pip install -e .
 ```
 
+On Linux both steps (plus verification and the test suite) are one command:
+
+```bash
+bash .env/install_linux.sh              # or --mode venv if conda is unavailable
+```
+
 ---
 
 ## 1. The five things you can run
@@ -167,8 +173,8 @@ Needs access to a real folder; it won't run on the tiny sample.
 | [benchmarks/benchmark_scaling.py](benchmarks/benchmark_scaling.py) | Estimate time/RAM for a big folder from short runs. |
 | [src/inspect_channel_intensity.py](src/inspect_channel_intensity.py) | Utility: inspect an interleaved folder's odd/even channel brightness (which is GCaMP?). Writes a CSV. |
 | [roi_editor.py](roi_editor.py) | **Utility (opens a window).** Shows the first image of each recording on the analysis grid; drag the ROI boxes and Bregma onto the anatomy and save a ROI set. See [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md). |
-| [run_intermingle_rs.py](run_intermingle_rs.py) | Study script: RS connectivity on ONE interleaved folder (`--roi-set` to use drawn ROIs). |
-| [run_botox_batch.py](run_botox_batch.py) | Study script: the BOTOX manifest batch, merging each animal's `t1..tn` (`--roi-set-dir` / `--roi-set`). |
+| [run_intermingle_rs.py](run_intermingle_rs.py) | Study script: RS connectivity on interleaved folders. Point `--folder` at one recording, an animal, or a whole day — every folder holding TIFFs below it is analysed separately into `<output-dir>\<animal>\<t#>\` (`--roi-set` to use drawn ROIs). |
+| [run_botox_batch.py](run_botox_batch.py) | Study script: the BOTOX manifest batch — one analysis per `t#` recording, each in its own output subfolder (`--merge-recordings` to concatenate them into one trial per animal instead; `--roi-set-dir` / `--roi-set` for drawn ROIs). |
 | [scan_botox_dataset.py](scan_botox_dataset.py) | Study script: scans the dataset share and writes `manifests/botox_restani_manifest.csv`. |
 
 ### The library (`src/wfci/`) — imported, not run
@@ -263,6 +269,9 @@ grouping is yours. See [experiments/README.md](experiments/README.md).
 "$CONDA" run -n letizia python src/inspect_channel_intensity.py \
     --input-dir data --output-path examples/channel_intensity.csv
 ```
+`channel_order="auto"` assigns the **dimmer** of the two interleaved groups to
+GCaMP (the reflectance/emo channel comes back brighter). If this recording is the
+exception, force it with `--channel-order gcamp_first|emo_first`.
 
 ### …confirm a change didn't break anything
 ```bash

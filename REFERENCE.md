@@ -27,9 +27,9 @@ streaming reader for the same format, so any format can be run either way.
 - `interleaved_channel_files(folder, pattern="*.tif", top_percent=10.0) ->
   (gcamp_files, emo_files)` — the split-and-identify half of the interleaved
   layout, **without loading frames**: sorted files split into odd- vs
-  even-positioned groups; the brighter group (by `_top_percent_mean` of the first
+  even-positioned groups; the dimmer group (by `_top_percent_mean` of the first
   image in each group — only those two images are read) becomes `gcamp`, the
-  dimmer `emo`; the two file lists are truncated to equal length. Shared by the
+  brighter `emo`; the two file lists are truncated to equal length. Shared by the
   full-load and streaming interleaved paths; the odd/even split it uses is what
   `src/inspect_channel_intensity.py` inspects.
 - `load_interleaved_folder(folder, pattern="*.tif", top_percent=10.0) ->
@@ -339,7 +339,7 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
 - `step1_*` / `step2_*` / `step3_*` — the original per-step pipeline scripts.
 - `step_interleaved_intermingle.m` — MATLAB implementation of the `interleaved`
   ("intermingle") modality: reads `data/`, splits odd/even frames, picks the
-  brighter group (mean of top-10% pixels of each group's first image) as gcamp,
+  dimmer group (mean of top-10% pixels of each group's first image) as gcamp,
   runs the RS pipeline (`trim=0`, `ds=0.5`, `y_1=60`, `x_2=67`) as a single
   trial, and saves `TEMP_ROI`/`R`/`R_mean`/`averaged_traces`. Data dir and output
   path come from env vars `WFCI_DATA` / `WFCI_INTERLEAVED_OUT` (defaults relative
@@ -353,8 +353,11 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
 - Example: `examples/run_example.py`.
 - Benchmark: `benchmarks/benchmark_modalities.py` (`RUN_CONFIG` block + argparse).
 - Study scripts (root, `RUN_CONFIG` block + argparse): `scan_botox_dataset.py`
-  (dataset → `manifests/*.csv`), `run_intermingle_rs.py` (one interleaved folder),
-  `run_botox_batch.py` (manifest batch, merges each animal's `t1..tn`).
+  (dataset → `manifests/*.csv`), `run_intermingle_rs.py` (interleaved folders:
+  `discover_recordings` walks the input for folders holding ≥2 images and analyses
+  each separately, mirroring the tree under `--output-dir`),
+  `run_botox_batch.py` (manifest batch; one analysis per `t#` recording by
+  default, or one concatenated trial per animal with `--merge-recordings`).
 - ROI geometry utility: `roi_editor.py` — interactive placement of the ROI boxes and
   Bregma on the first image of each recording (rendered on the final analysis grid),
   writing `roi_sets/<key>.yaml`. That file is an atlas file plus `bregma_row` /
