@@ -147,9 +147,11 @@ def load_frame_folder(folder: str | Path, pattern: str = "*.tif") -> np.ndarray:
 def _top_percent_mean(image: np.ndarray, top_percent: float = 10.0) -> float:
     """Mean of the brightest ``top_percent``% of pixels in one image.
 
-    Same signal proxy used by ``src/inspect_channel_intensity.py``: the bright
-    pixels are the actual fluorescence signal (vs. background), so their mean
-    separates the strong GCaMP channel from the weaker reflectance (emo) one.
+    Same signal proxy used by ``src/inspect_channel_intensity.py``: taking only
+    the top pixels compares the two channels on their illuminated part rather
+    than on background, which is what separates the two interleaved groups
+    cleanly. On this rig the reflectance (emo) channel is the *brighter* of the
+    two and GCaMP the dimmer, so the group with the LOWER value here is gcamp.
     """
     pixels = np.asarray(image, dtype=np.float64).ravel()
     threshold = np.percentile(pixels, 100.0 - top_percent)
@@ -173,19 +175,21 @@ def interleaved_channel_files(
     ``channel_order`` decides which group is which:
 
     ``"auto"`` (default)
-        Decide by intensity: the brighter group is GCaMP (the fluorescence
-        signal), the dimmer is emo (reflectance). We compare the first image of
-        each group (i.e. the first two images in the folder) by the mean of their
-        top ``top_percent``% pixels; the brighter one's group becomes gcamp. Only
-        those two images are read, so this stays cheap even for a folder too large
-        to load.
+        Decide by intensity: the DIMMER group is GCaMP, the brighter one is emo
+        (the reflectance channel, which on this rig comes back stronger than the
+        GCaMP fluorescence). We compare the first image of each group (i.e. the
+        first two images in the folder) by the mean of their top
+        ``top_percent``% pixels; the dimmer one's group becomes gcamp. Only those
+        two images are read, so this stays cheap even for a folder too large to
+        load.
     ``"gcamp_first"`` / ``"emo_first"``
         Assign by position instead, reading nothing at all. This is what the
         MATLAB scripts do implicitly (the cerebellar ones take GCaMP first, the
         cortical ones emo first) -- and getting it wrong silently swaps the
         channels, inverting the hemodynamic correction. Use these only when you
         know the layout and the brightness heuristic misfires (e.g. an unusually
-        dim GCaMP recording).
+        bright GCaMP recording, where the two channels are close enough that the
+        dimmer-is-gcamp rule can pick the wrong group).
 
     The two lists are truncated to equal length (odd total -> groups differ by
     one) so the channels stay in lockstep for the per-frame hemodynamic
@@ -217,11 +221,11 @@ def interleaved_channel_files(
     elif channel_order == "emo_first":
         gcamp_files, emo_files = even_files, odd_files
     else:
-        # Decide which group is the brighter (GCaMP) channel from the first image
+        # Decide which group is the dimmer (GCaMP) channel from the first image
         # of each group -- "the first two images" the user inspects.
         odd_intensity = _top_percent_mean(tifffile.imread(str(odd_files[0])), top_percent)
         even_intensity = _top_percent_mean(tifffile.imread(str(even_files[0])), top_percent)
-        if odd_intensity >= even_intensity:
+        if odd_intensity <= even_intensity:
             gcamp_files, emo_files = odd_files, even_files
         else:
             gcamp_files, emo_files = even_files, odd_files

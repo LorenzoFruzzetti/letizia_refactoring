@@ -9,6 +9,9 @@ dist/
 # Package editable install artifacts
 src/*.egg-info/
 
+# Local virtualenv created by .env/install_linux.sh --mode venv
+.venv/
+
 # Outputs
 outputs/
 examples/output/

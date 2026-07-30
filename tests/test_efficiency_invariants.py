@@ -120,16 +120,17 @@ def multipage_trial(tmp_path_factory):
 def interleaved_folder(tmp_path_factory):
     """A folder of single-page TIFFs with the two channels alternating.
 
-    Odd-positioned images are the brighter (GCaMP) group, so the split's
-    intensity decision has a definite right answer.
+    Odd-positioned images are the dim group, which under the loader's rule
+    (dimmer = GCaMP) makes the split's intensity decision have a definite right
+    answer.
     """
     tmp = tmp_path_factory.mktemp("interleaved")
-    bright = _frames(offset=1000.0)
     dim = _frames()
+    bright = _frames(offset=1000.0)
     for i in range(N_FRAMES):
-        # 1-based positions: odd = bright/gcamp, even = dim/emo.
-        tifffile.imwrite(str(tmp / f"img_{2 * i:05d}.tif"), bright[:, :, i].astype(np.float32))
-        tifffile.imwrite(str(tmp / f"img_{2 * i + 1:05d}.tif"), dim[:, :, i].astype(np.float32))
+        # 1-based positions: odd = dim/gcamp, even = bright/emo.
+        tifffile.imwrite(str(tmp / f"img_{2 * i:05d}.tif"), dim[:, :, i].astype(np.float32))
+        tifffile.imwrite(str(tmp / f"img_{2 * i + 1:05d}.tif"), bright[:, :, i].astype(np.float32))
     return tmp
 
 
@@ -247,6 +248,20 @@ def test_i5_interleaved_split_reads_only_two_images(interleaved_folder, monkeypa
         f"group may be read (the brightness decision)"
     )
     assert len(gcamp_files) == len(emo_files) == N_FRAMES
+
+
+def test_auto_assigns_the_dimmer_group_to_gcamp(interleaved_folder):
+    """'auto' picks the DIMMER interleaved group as GCaMP.
+
+    The fixture writes the dim frames at odd positions, so the right answer is
+    files[0::2]. Pinned because getting it backwards silently swaps the channels
+    and inverts the hemodynamic correction -- nothing downstream would error.
+    """
+    gcamp_files, emo_files = interleaved_channel_files(interleaved_folder)
+
+    all_files = sorted(interleaved_folder.glob("*.tif"))
+    assert gcamp_files == all_files[0::2], "gcamp must be the dim (odd) group"
+    assert emo_files == all_files[1::2]
 
 
 def test_i6_same_split_feeds_full_load_and_streaming(interleaved_folder):

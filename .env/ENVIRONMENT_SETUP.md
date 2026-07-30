@@ -2,6 +2,47 @@
 
 Conda environment: **`letizia`** (Python 3.11).
 
+## Linux: one-command install
+
+`.env/install_linux.sh` builds the whole environment (deps + editable `wfci`)
+and verifies it. Run it from the repo root:
+
+```bash
+# conda mode (default): creates/updates the `letizia` env from environment.yml.
+# Uses conda, mamba or micromamba, whichever is found first.
+bash .env/install_linux.sh
+
+# venv mode: no conda needed; creates .venv/ and pip-installs requirements.txt
+bash .env/install_linux.sh --mode venv
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--mode conda\|venv` | Installer backend (default `conda`) |
+| `--name <env>` | Conda env name (default `letizia`) |
+| `--venv-path <dir>` | Venv location (default `<repo>/.venv`) |
+| `--python <bin>` | Interpreter used to bootstrap venv mode (default `python3`) |
+| `--force` | Delete and recreate the env from scratch |
+| `--no-test` | Skip the post-install `pytest` run |
+| `--help` | Usage summary |
+
+`roi_editor.py` is a **pyqtgraph (Qt)** window, so it needs `pyqtgraph` plus a Qt
+binding — `pyside6` is what this project is tested against, though the code reaches
+Qt only through `pyqtgraph.Qt`, so PyQt6 / PyQt5 / PySide2 work too. Both are in
+`environment.yml` / `requirements.txt`, and also available as the `gui` extra
+(`pip install -e ".[gui]"`).
+
+On a headless Linux box a Qt wheel may still need system X/GL libraries
+(`sudo apt install libgl1 libegl1 libxkbcommon-x11-0`); `QT_QPA_PLATFORM=offscreen`
+runs it without a display, which is how `tests/test_roi_editor.py` drives it.
+
+Every other script is headless and does not need Qt at all — and neither does
+`from roi_editor import load_roi_set`, which the run scripts use to read ROI sets:
+the editor imports Qt inside `ROIEditor._build_ui`, never at module level. The
+installer reports whether `pyqtgraph` imports.
+
+## Windows
+
 On this machine `conda` is not on PATH; use the full path to `conda.bat`:
 
 - Git Bash: `"$USERPROFILE/miniconda3/condabin/conda.bat"`

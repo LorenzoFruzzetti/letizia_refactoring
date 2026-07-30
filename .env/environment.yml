@@ -8,6 +8,11 @@ dependencies:
   - pandas>=2.0
   - tifffile>=2023.7.10
   - matplotlib>=3.7
+  # roi_editor.py's interactive window. pyqtgraph needs a Qt binding; pyside6 is
+  # the one this project is tested against, but the code imports Qt only through
+  # `pyqtgraph.Qt`, so PyQt5/PyQt6/PySide2 also work if that is what a machine has.
+  - pyqtgraph>=0.13
+  - pyside6>=6.5
   - pyyaml>=6.0
   - pytest>=7.4
   - pip

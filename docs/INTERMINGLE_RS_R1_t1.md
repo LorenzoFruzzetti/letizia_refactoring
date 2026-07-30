@@ -121,7 +121,7 @@ Set in `RUN_CONFIG` (or via flags):
 |-----|-----------|---------|
 | `folder` | the R1/t1 UNC path | the interleaved trial folder |
 | `profile` | `cerebellar_rs` | 4 cerebellar ROIs, RS windows |
-| `channel_order` | `auto` | brighter group → GCaMP (correct here) |
+| `channel_order` | `auto` | brighter group → GCaMP — this run predates the change of the `auto` rule to **dimmer group → GCaMP**, so re-running it now assigns the channels the other way round |
 | `bregma_row` / `bregma_col` | `121` / `134` | per-animal Bregma (full-res; `//2` applied → `y_1=60, x_2=67`) |
 | `debug` / `debug_max_frames` | `True` / `60` | smoke-run size (debug only) |
 | `output_dir` | `outputs/intermingle_R1_t1` | where results land |

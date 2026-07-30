@@ -1,39 +1,45 @@
-"""Batch resting-state FC over the BOTOX_RESTANI manifest, merging recordings.
+"""Batch resting-state FC over the BOTOX_RESTANI manifest, per recording.
 
 This is a *study script* (P2 boundary: dataset policy lives here, mechanism lives
 in ``wfci``). It reads the manifest produced by ``scan_botox_dataset.py`` and, for
-each (day, animal) row, runs ONE cerebellar resting-state connectivity analysis
-over ALL of that animal's ``t1..tn`` recordings *concatenated into a single
-continuous trial* -- because for this dataset the consecutive ``t#`` recordings
-are one resting-state session split across files.
+each (day, animal) row, runs a cerebellar resting-state connectivity analysis over
+that animal's ``t1..tn`` interleaved recordings.
 
-MERGE = CONCATENATION (not trial-averaging). Each ``t#`` folder is split into its
-two interleaved channels, the first ``trim`` frames of each block are dropped (the
-per-acquisition onset transient), and the trimmed blocks are concatenated
-frame-by-frame into one long gcamp stream + one long emo stream. That single
-stream is then run as ONE trial (with the pipeline's own ``trim`` set to 0, since
-we already trimmed per block), so there is one baseline, one ROI time-series, and
-one correlation over the whole concatenated recording. The alternative -- treating
-each ``t#`` as a separate trial and averaging their correlation matrices -- would
-be right only if the blocks were separate acquisitions; here they are continuous.
+SEPARATE (default, ``merge_recordings=False``). Each ``t#`` subfolder is its own
+analysis: its own channel split, its own ``trim``, baseline, ROI time-series and
+correlation matrix, written to its own output subfolder. Nothing is pooled across
+recordings, so per-recording results stay comparable and one bad block cannot
+contaminate the others.
 
-Per (day, animal) it writes, under ``<output_root>\\<day>_<animal>\\``:
+MERGE = CONCATENATION (``merge_recordings=True``), for when the consecutive ``t#``
+recordings really are one continuous session split across files. Each ``t#`` folder
+is split into its two interleaved channels, the first ``trim`` frames of each block
+are dropped (the per-acquisition onset transient), and the trimmed blocks are
+concatenated frame-by-frame into one long gcamp stream + one long emo stream. That
+single stream runs as ONE trial (with the pipeline's own ``trim`` set to 0, since
+we already trimmed per block), so there is one baseline, one ROI time-series and
+one correlation over the whole concatenation. Note this is concatenation, not
+trial-averaging: averaging the blocks' correlation matrices would be right only if
+they were separate acquisitions.
+
+Per (day, animal) it writes, under ``<output_root>\\<day>_<animal>\\`` -- and, in
+the default separate mode, under a further ``<t#>\\`` subfolder per recording:
     * connectivity[_debug].npz  -- temp_roi, R, R_mean, averaged_traces, labels,
-                                   the merged recording paths, Bregma, profile.
+                                   the recording path(s), Bregma, profile.
     * roi_traces[_debug].png    -- trial-averaged ROI traces.
     * roi_overlay_debug.png     -- ROI placement (debug/in-memory mode only).
-And one summary row per unit is appended to ``<output_root>\\batch_summary.csv``.
+One summary row per recording (or per unit when merging) is appended to
+``<output_root>\\batch_summary.csv``.
 
 Two modes, mirroring ``run_intermingle_rs.py``:
     * debug = True  -- fast smoke test. Loads only ``debug_max_frames`` frames per
-      channel per recording into RAM (after the per-block trim), concatenates the
-      blocks into one trial, and runs ``run_profile``, optionally capping the
-      number of concatenated recordings (``debug_max_recordings``). Keeps
-      ``dff_stack`` so it can draw the ROI-placement overlay. Use to validate setup.
-    * debug = False -- the real run. Streams the concatenation of every frame of
-      every recording in constant memory (``run_streaming_profile``, two passes
-      over the one long trial). A full unit is ~15 GB across 5 recordings, so
-      streaming is mandatory. No overlay.
+      channel per recording into RAM and runs ``run_profile``, optionally capping
+      the number of recordings used (``max_recordings``). Keeps ``dff_stack`` so it
+      can draw the ROI-placement overlay. Use to validate setup.
+    * debug = False -- the real run. Streams every frame of every recording in
+      constant memory (``run_streaming_profile``, two passes per trial). A single
+      recording is ~3 GB and a full unit ~15 GB across 5, so streaming is
+      mandatory. No overlay.
 
 ROI geometry: each unit uses its profile's atlas and the manifest's Bregma unless a
 ROI set drawn with ``roi_editor.py`` is configured -- ``roi_set_dir`` for per-unit
@@ -48,6 +54,7 @@ Run it:
     conda run -n letizia python run_botox_batch.py                  # editor mode, uses RUN_CONFIG
     conda run -n letizia python run_botox_batch.py --full           # force full streaming
     conda run -n letizia python run_botox_batch.py --select 260611/R1 260611/R2
+    conda run -n letizia python run_botox_batch.py --merge-recordings   # one concatenated trial per animal
 
 Edit ``RUN_CONFIG`` and run -- no CLI flags needed. Errors are left to surface.
 """
@@ -102,14 +109,27 @@ RUN_CONFIG: dict[str, Any] = {
     #   * roi_set     -- ONE file used for every unit ("the same ROIs for all
     #     sessions"), e.g. r"roi_sets\shared_roi_set.yaml".
     # Set both to None to keep the previous behaviour exactly.
+    # roi_set is the 22-box cortical layout (wfci.atlases.CORTEX_22 -- the MATLAB's
+    # img_av(y_1+.., x_2+..) boxes), shared by every unit. Only the ATLAS is
+    # replaced: the manifest's profile column stays cerebellar_rs, so the pipeline
+    # chain (trim, no mask, no GSR) is unchanged -- just 22 ROIs instead of 4.
+    # Each file's own Bregma wins over the manifest's, so once you have drawn
+    # per-animal sets with roi_editor.py, set roi_set_dir = r"roi_sets" and those
+    # take precedence over this shared file.
     "roi_set_dir": None,
-    "roi_set": None,
+    "roi_set": r"roi_sets\cortex22_roi_set.yaml",
+    # How the animal's t1..tn recordings are treated:
+    #   False (default) -- each t# subfolder is its own analysis, with its own
+    #     trim/baseline/correlation and its own <day>_<animal>\<t#>\ output folder.
+    #   True            -- all t# are concatenated into ONE continuous trial
+    #     (see the module docstring); one output folder per animal.
+    "merge_recordings": False,
     # Debug smoke test (in-memory, limited frames) vs full streaming run.
     "debug": True,
     # Debug only: frames PER CHANNEL PER RECORDING to load into RAM.
     "debug_max_frames": 60,
-    # Cap how many t# recordings are concatenated (None = all). Applies to BOTH
-    # modes -- e.g. set to 2 to run/time only t1+t2. The real analysis uses all 5.
+    # Cap how many t# recordings are used (None = all). Applies to BOTH modes and
+    # both merge settings -- e.g. 2 = only t1+t2. The real analysis uses all 5.
     "max_recordings": None,
     "prefer_cli_args": True,
 }
@@ -135,7 +155,11 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     p.add_argument("--debug-frames", type=int, default=defaults["debug_max_frames"],
                    metavar="N", help="Debug mode: frames per channel per recording.")
     p.add_argument("--max-recordings", type=int, default=defaults["max_recordings"],
-                   metavar="K", help="Cap concatenated recordings (both modes); e.g. 2 = t1+t2.")
+                   metavar="K", help="Cap the recordings used (both modes); e.g. 2 = t1+t2.")
+    p.add_argument("--merge-recordings", action=argparse.BooleanOptionalAction,
+                   default=defaults["merge_recordings"],
+                   help="Concatenate an animal's t# recordings into ONE trial. "
+                        "Default (--no-merge-recordings): analyse each t# separately.")
     ns = p.parse_args()
     return ns
 
@@ -155,6 +179,7 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         debug=bool(config["debug"]),
         debug_frames=config["debug_max_frames"],
         max_recordings=config["max_recordings"],
+        merge_recordings=bool(config["merge_recordings"]),
     )
 
 
@@ -257,56 +282,78 @@ def _build_concat_debug_trial(rec_paths: list[str], channel_order: str, limit: i
     return np.concatenate(gcamp_parts, axis=-1), np.concatenate(emo_parts, axis=-1)
 
 
-def run_unit(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any]:
-    """Run one (day, animal) unit: merge its recordings and save the results."""
-    day, animal = row["day"], row["animal"]
-    unit = f"{day}/{animal}"
-    rec_paths = [p for p in row["recording_paths"].split(";") if p]
-    bregma_row, bregma_col = int(row["bregma_row"]), int(row["bregma_col"])
-    channel_order = row["channel_order"]
+def _run_one_recording(folder: str, cfg, profile, channel_order: str,
+                       args: argparse.Namespace):
+    """Run ONE t# recording as its own trial -- the default, unmerged path.
 
-    profile = get_profile(row["profile"])
-    # An optional ROI set (drawn with roi_editor.py) overrides the profile's atlas
-    # and the manifest's Bregma -- boxes and Bregma always travel together.
-    roi_set = resolve_roi_set(day, animal, args)
-    profile, bregma_row, bregma_col = apply_roi_set(profile, bregma_row, bregma_col, roi_set)
-    # The profile supplies the ROI atlas; cfg carries only the per-animal Bregma.
-    cfg = ROIConfig.from_bregma(bregma_row, bregma_col, boxes=dict(profile.atlas))
+    Nothing is shared with the animal's other recordings: this folder's own
+    interleaved split feeds the profile unchanged, so the profile's own ``trim``
+    drops this acquisition's onset transient and the baseline/correlation windows
+    are computed over this recording alone. Same math as
+    ``run_intermingle_rs.py`` on a single folder.
+    """
+    gcamp_files, emo_files = interleaved_channel_files(folder, channel_order=channel_order)
+    n_per_channel = min(len(gcamp_files), len(emo_files))
+    gcamp_files, emo_files = list(gcamp_files[:n_per_channel]), list(emo_files[:n_per_channel])
 
-    out_dir = os.path.join(args.output_root, f"{day}_{animal}")
-    os.makedirs(out_dir, exist_ok=True)
+    if args.debug:
+        limit = min(args.debug_frames, n_per_channel)
+        if limit <= profile.trim:
+            raise ValueError(
+                f"{folder}: debug frames={limit} is at or below the profile's "
+                f"{profile.trim}-frame trim; nothing left to correlate."
+            )
+        print(f"Mode   : DEBUG (in-memory) -- first {limit} frames/channel "
+              f"of {n_per_channel} (trim {profile.trim})")
+        trial = _load_limited_trial(gcamp_files, emo_files, limit)
+        return run_profile([trial], cfg, profile)
 
-    # Which blocks to concatenate (cap applies to both modes; e.g. 2 -> t1+t2).
-    merged = rec_paths if args.max_recordings is None else rec_paths[:args.max_recordings]
-    # We trim each block's onset ourselves, then concatenate, so the pipeline's own
-    # per-trial trim must be disabled -- otherwise it would trim the concatenation
-    # once more at its very start.
+    print(f"Mode   : FULL (streaming) -- {n_per_channel} frames/channel "
+          f"(trim {profile.trim})")
+    sources = [(folder_frame_source(gcamp_files), folder_frame_source(emo_files))]
+    return run_streaming_profile(sources, cfg, profile)
+
+
+def _run_merged_recordings(rec_paths: list[str], cfg, profile, channel_order: str,
+                           args: argparse.Namespace):
+    """Run an animal's recordings concatenated into ONE continuous trial.
+
+    We trim each block's onset ourselves, then concatenate, so the pipeline's own
+    per-trial trim must be disabled -- otherwise it would trim the concatenation
+    once more at its very start.
+    """
     block_trim = profile.trim
     run_prof = replace(profile, trim=0)
-
-    print(f"\n=== {unit} (group {row['group']}) ===")
-    print(f"Bregma : row={bregma_row}, col={bregma_col} "
-          f"(downsampled y_1={cfg.y_1}, x_2={cfg.x_2})")
-
-    t0 = time.perf_counter()
     if args.debug:
-        print(f"Mode   : DEBUG (in-memory) -- concatenate {len(merged)}/{len(rec_paths)} "
-              f"recordings, first {args.debug_frames} frames/channel each "
-              f"(onset trim {block_trim})")
-        trial = _build_concat_debug_trial(merged, channel_order, args.debug_frames, block_trim)
-        result = run_profile([trial], cfg, run_prof)
+        print(f"Mode   : DEBUG (in-memory) -- concatenate {len(rec_paths)} recordings, "
+              f"first {args.debug_frames} frames/channel each (onset trim {block_trim})")
+        trial = _build_concat_debug_trial(
+            rec_paths, channel_order, args.debug_frames, block_trim
+        )
+        return run_profile([trial], cfg, run_prof)
+
+    print(f"Mode   : FULL (streaming) -- concatenate {len(rec_paths)} recordings into "
+          f"one trial (onset trim {block_trim})")
+    source = _build_concat_streaming_source(rec_paths, channel_order, block_trim)
+    return run_streaming_profile([source], cfg, run_prof)
+
+
+def _save_outputs(result, out_dir: str, args: argparse.Namespace, cfg, profile,
+                  meta: dict[str, Any]) -> str:
+    """Write the overlay/traces/npz for one analysis. Returns the .npz path.
+
+    Shared by the separate and merged paths so both write the same files with the
+    same names -- only the directory (and ``meta``) differ.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    labels = profile.labels
+
+    if getattr(result, "dff_stack", None) is not None:
+        # RAM (debug) mode only: the placement overlay needs the DFF stack.
         overlay_path = os.path.join(out_dir, "roi_overlay_debug.png")
         _save_overlay(result.dff_stack, cfg, profile, overlay_path)
         print(f"Overlay: {overlay_path}  <- CHECK the boxes sit on the anatomy")
-    else:
-        print(f"Mode   : FULL (streaming) -- concatenate {len(merged)}/{len(rec_paths)} "
-              f"recordings into one trial (onset trim {block_trim})")
-        source = _build_concat_streaming_source(merged, channel_order, block_trim)
-        result = run_streaming_profile([source], cfg, run_prof)
-    elapsed = time.perf_counter() - t0
-    print(f"Time   : {elapsed:.1f}s for {len(merged)} recording(s)")
 
-    labels = profile.labels
     print(f"R_mean ({profile.n_rois}x{profile.n_rois}), ROI order {labels}:")
     print(np.array2string(result.R_mean, precision=4, suppress_small=True))
 
@@ -323,37 +370,101 @@ def run_unit(row: dict[str, str], args: argparse.Namespace) -> dict[str, Any]:
         averaged_traces=result.averaged_traces,
         roi_labels=np.array(labels),
         profile=np.array(profile.name),
-        day=np.array(day),
-        animal=np.array(animal),
-        group=np.array(row["group"]),
-        bregma=np.array([bregma_row, bregma_col]),
-        merged_recordings=np.array(merged),
-        # Which geometry produced these numbers ("" = the profile's own atlas).
-        roi_set=np.array(roi_set or ""),
+        **{k: np.array(v) for k, v in meta.items()},
     )
     if getattr(result, "dff_stack", None) is not None:
         arrays["dff_stack"] = result.dff_stack
     np.savez(npz_path, **arrays)
     print(f"Saved  : {npz_path}")
+    return npz_path
 
-    # One flat summary row: the off-diagonal mean is a crude single-number handle
-    # on the connectivity strength, useful for eyeballing the batch at a glance.
-    n = result.R_mean.shape[0]
-    off_diag = result.R_mean[~np.eye(n, dtype=bool)]
-    return {
-        "day": day,
-        "animal": animal,
-        "group": row["group"],
-        "n_recordings_merged": len(merged),
-        "profile": profile.name,
-        "bregma_row": bregma_row,
-        "bregma_col": bregma_col,
-        "roi_set": roi_set or "",
-        "mean_offdiag_R": float(np.nanmean(off_diag)),
-        "mode": "debug" if args.debug else "full",
-        "elapsed_s": round(elapsed, 1),
-        "npz_path": npz_path,
-    }
+
+def run_unit(row: dict[str, str], args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Run one (day, animal) unit and save its results.
+
+    Returns one summary row per analysis: one per recording in the default
+    separate mode, or a single merged row when ``--merge-recordings`` is set.
+    """
+    day, animal = row["day"], row["animal"]
+    unit = f"{day}/{animal}"
+    rec_paths = [p for p in row["recording_paths"].split(";") if p]
+    bregma_row, bregma_col = int(row["bregma_row"]), int(row["bregma_col"])
+    channel_order = row["channel_order"]
+
+    profile = get_profile(row["profile"])
+    # An optional ROI set (drawn with roi_editor.py) overrides the profile's atlas
+    # and the manifest's Bregma -- boxes and Bregma always travel together.
+    roi_set = resolve_roi_set(day, animal, args)
+    profile, bregma_row, bregma_col = apply_roi_set(profile, bregma_row, bregma_col, roi_set)
+    # The profile supplies the ROI atlas; cfg carries only the per-animal Bregma.
+    cfg = ROIConfig.from_bregma(bregma_row, bregma_col, boxes=dict(profile.atlas))
+
+    unit_dir = os.path.join(args.output_root, f"{day}_{animal}")
+    # Which recordings to use (cap applies to both modes; e.g. 2 -> t1+t2).
+    used = rec_paths if args.max_recordings is None else rec_paths[:args.max_recordings]
+
+    print(f"\n=== {unit} (group {row['group']}) ===")
+    print(f"Bregma : row={bregma_row}, col={bregma_col} "
+          f"(downsampled y_1={cfg.y_1}, x_2={cfg.x_2})")
+    print(f"Recs   : {len(used)}/{len(rec_paths)} "
+          f"{'CONCATENATED into one trial' if args.merge_recordings else 'analysed SEPARATELY'}")
+
+    # Common per-unit provenance saved into every .npz alongside the arrays.
+    base_meta = dict(
+        day=day,
+        animal=animal,
+        group=row["group"],
+        bregma=[bregma_row, bregma_col],
+        # Which geometry produced these numbers ("" = the profile's own atlas).
+        roi_set=roi_set or "",
+    )
+    base_summary = dict(
+        day=day,
+        animal=animal,
+        group=row["group"],
+        profile=profile.name,
+        bregma_row=bregma_row,
+        bregma_col=bregma_col,
+        roi_set=roi_set or "",
+        mode="debug" if args.debug else "full",
+    )
+
+    if args.merge_recordings:
+        t0 = time.perf_counter()
+        result = _run_merged_recordings(used, cfg, profile, channel_order, args)
+        elapsed = time.perf_counter() - t0
+        print(f"Time   : {elapsed:.1f}s for {len(used)} recording(s)")
+        npz_path = _save_outputs(result, unit_dir, args, cfg, profile,
+                                 dict(base_meta, merged_recordings=used))
+        return [dict(base_summary, recording="merged", n_recordings=len(used),
+                     mean_offdiag_R=_mean_offdiag(result.R_mean),
+                     elapsed_s=round(elapsed, 1), npz_path=npz_path)]
+
+    summaries = []
+    for folder in used:
+        # Each recording keeps its own identity in the output tree: the t# folder
+        # name becomes a subfolder, so t1 and t2 never overwrite each other.
+        rec_name = os.path.basename(folder.rstrip("\\/")) or "recording"
+        print(f"\n--- {unit} / {rec_name} ---")
+        print(f"Folder : {folder}")
+        t0 = time.perf_counter()
+        result = _run_one_recording(folder, cfg, profile, channel_order, args)
+        elapsed = time.perf_counter() - t0
+        print(f"Time   : {elapsed:.1f}s")
+        npz_path = _save_outputs(result, os.path.join(unit_dir, rec_name), args, cfg,
+                                 profile, dict(base_meta, recording=rec_name,
+                                               recording_path=folder))
+        summaries.append(dict(base_summary, recording=rec_name, n_recordings=1,
+                              mean_offdiag_R=_mean_offdiag(result.R_mean),
+                              elapsed_s=round(elapsed, 1), npz_path=npz_path))
+    return summaries
+
+
+def _mean_offdiag(R_mean: np.ndarray) -> float:
+    """Mean of the off-diagonal correlations -- a crude single-number handle on
+    connectivity strength, useful for eyeballing the batch summary at a glance."""
+    n = R_mean.shape[0]
+    return float(np.nanmean(R_mean[~np.eye(n, dtype=bool)]))
 
 
 def main() -> None:
@@ -365,16 +476,19 @@ def main() -> None:
     print(f"Manifest : {args.manifest} ({len(rows)} rows)")
     print(f"Selected : {len(chosen)} unit(s) -> {keys}")
     print(f"Mode     : {'DEBUG' if args.debug else 'FULL streaming'}")
+    print("Recs     : " + ("merged into one trial per animal" if args.merge_recordings
+                           else "kept separate (one analysis per t#)"))
 
     os.makedirs(args.output_root, exist_ok=True)
-    summaries = [run_unit(row, args) for row in chosen]
+    # One row per analysis: per recording when separate, per unit when merging.
+    summaries = [s for row in chosen for s in run_unit(row, args)]
 
     summary_csv = os.path.join(args.output_root, "batch_summary.csv")
     with open(summary_csv, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(summaries[0].keys()))
         writer.writeheader()
         writer.writerows(summaries)
-    print(f"\nBatch summary ({len(summaries)} units) -> {summary_csv}")
+    print(f"\nBatch summary ({len(summaries)} row(s)) -> {summary_csv}")
 
 
 if __name__ == "__main__":

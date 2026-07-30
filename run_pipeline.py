@@ -12,8 +12,8 @@ Two independent knobs describe a run (see ``wfci.io`` / ``wfci.streaming``):
   * ``"interleaved_folder"``: each trial is a SINGLE folder of single-page TIFFs
     holding both channels acquired alternately (odd-positioned images are one
     channel, even-positioned the other). The loader splits them and assigns the
-    brighter group (by top-10% pixel intensity of the first image in each group)
-    to gcamp, the dimmer to emo. This is the layout of the sample ``data/``
+    dimmer group (by top-10% pixel intensity of the first image in each group)
+    to gcamp, the brighter to emo. This is the layout of the sample ``data/``
     folder. Each ``trials`` entry is a single folder path, not a (gcamp, emo)
     pair.
 
@@ -90,7 +90,7 @@ RUN_CONFIG: dict[str, Any] = {
     # Trial paths. For "stack_file"/"frame_folder" each entry is a (gcamp, emo)
     # pair (two files or two folders). For "interleaved_folder" each entry is
     # instead a SINGLE folder holding both channels interleaved (odd/even
-    # images); the loader splits them and picks the brighter group as gcamp.
+    # images); the loader splits them and picks the dimmer group as gcamp.
     "trials": [
         # stack_file/frame_folder: ("data/animal_t1_gcamp.tif", "data/animal_t1_emo.tif"),
         # UNC paths must be raw strings (r"...") or the backslashes are read as
@@ -113,8 +113,8 @@ RUN_CONFIG: dict[str, Any] = {
     #     save_atlas(CORTEX_22, "my_study/atlas.yaml")
     "atlas_path": None,
     # Which channel comes first in an interleaved folder: "auto" identifies them
-    # by brightness (recommended, and what this script has always done);
-    # "gcamp_first"/"emo_first" assign by position instead.
+    # by brightness (recommended: the dimmer group is GCaMP, the brighter one is
+    # emo); "gcamp_first"/"emo_first" assign by position instead.
     "channel_order": "auto",
     # Per-animal Bregma (full-resolution row, col); floor(.../2) is applied.
     "bregma_row": 121,
@@ -262,7 +262,7 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
         choices=CHANNEL_ORDERS,
         default=defaults["channel_order"],
         help="Interleaved folders only: how to tell the channels apart. 'auto' "
-             "uses brightness (the brighter group is GCaMP); the positional "
+             "uses brightness (the dimmer group is GCaMP); the positional "
              "options override it.",
     )
     p.add_argument("--bregma-row", type=int, default=defaults["bregma_row"])

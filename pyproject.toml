@@ -18,6 +18,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4"]
+# roi_editor.py's interactive window. NOT a dependency of the `wfci` library --
+# nothing under src/ imports pyqtgraph, and the editor keeps Qt out of module scope
+# so `from roi_editor import load_roi_set` still works without this extra installed.
+gui = ["pyqtgraph>=0.13", "pyside6>=6.5"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

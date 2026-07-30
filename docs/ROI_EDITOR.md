@@ -34,17 +34,30 @@ and `run_botox_batch.py` took the ROI layout straight from the profile's atlas �
 as **inclusive, 1-based offsets from Bregma** — and the only per-animal knob was
 Bregma itself (`bregma_row` / `bregma_col`).
 
-That is two separate things you might want to change:
+That is three separate things you might want to change:
 
 | What | Where it lived | What it does |
 |------|----------------|--------------|
 | **Bregma** | `RUN_CONFIG["bregma_row"/"bregma_col"]`, or the manifest column | Anchors the whole layout. Moving it translates **all** boxes together. |
+| **Lambda** | `RUN_CONFIG["lambda_offset"]` (editor only) | The distance Bregma → Lambda, i.e. the **scale** the offsets are in. Changing it stretches or shrinks the whole layout about Bregma. |
 | **The boxes** | `wfci.atlases.CEREBELLUM_4` (library) | The offsets of each region from that anchor, and their sizes. |
 
 Editing the library's atlas was never the answer — that constant is MATLAB-validated
 and shared by every study (P1/P2 in [LIBRARY.md](../LIBRARY.md)). The library already
 supported a study bringing its own layout (`load_atlas` / `save_atlas`); what was
 missing was a way to *see* where the boxes land and drag them there.
+
+### Current starting layout: the 22 cortical boxes
+
+`roi_editor.py` now opens on `RUN_CONFIG["profile"] = "cortical_gsr"`, whose atlas is
+[`CORTEX_22`](../src/wfci/atlases.py) — the 22 `img_av(y_1+…, x_2+…)` boxes from the
+MATLAB cortical scripts. The editor reads **only** a profile's atlas and downsample
+(it runs no pipeline), so that choice does not pull in `cortical_gsr`'s brain mask or
+GSR. Set it back to `"cerebellar_rs"` for the four-box `CEREBELLUM_4` layout.
+
+The same 22 boxes are checked in as [`roi_sets/cortex22_roi_set.yaml`](../roi_sets/README.md),
+which both run scripts use by default — atlas only, on the unchanged `cerebellar_rs`
+chain, giving a 22×22 `R`.
 
 ---
 
@@ -64,7 +77,20 @@ external terminal plus the window, on the pinned `letizia` interpreter).
 >
 > Two smaller traps: plain `conda run` (no `--no-capture-output`) withholds every
 > print until the process exits, so the terminal looks dead while the window is open;
-> and the Tk window can open **behind** the terminal — check the taskbar.
+> and the Qt window can open **behind** the terminal — check the taskbar.
+
+**Built on pyqtgraph.** Each box is a `pg.RectROI` and each landmark a `pg.TargetItem`,
+so dragging, corner handles and whole-pixel snapping (`translateSnap` / `scaleSnap`) are
+Qt's job rather than hand-rolled hit-testing — a box cannot acquire a fractional
+offset, and rotation is disabled because `wfci` has no way to express a rotated slice.
+Scroll or right-drag to zoom/pan; right-click is pyqtgraph's own menu (view range,
+export image).
+
+Qt is imported inside `ROIEditor._build_ui`, **never** at module level, so the run
+scripts' `from roi_editor import load_roi_set` still works on a headless batch
+machine — an unattended 15 GB run must not die because there is no display.
+`tests/test_roi_editor.py` drives the real widgets under
+`QT_QPA_PLATFORM=offscreen` and asserts that import stays GUI-free.
 
 **What it shows.** One page per session. For each it decodes only the first
 `preview_frames` GCaMP images of that folder and applies the *same* two 0.5× box
@@ -86,21 +112,73 @@ The per-animal key is the one `run_botox_batch.py --roi-set-dir` looks up, so
 
 **Controls** (also printed in the window and to the terminal):
 
+*Move the whole layout* — Bregma **and** every box together. This is the primary
+gesture: the boxes are stored as offsets *from* Bregma, so moving the anchor
+translates all of them rigidly. Nothing deforms, no box changes size.
+
 | | |
 |---|---|
-| left-drag inside a box | move it |
-| left-drag a corner | resize it |
-| right-click | put Bregma there (all boxes translate with it) |
-| `ctrl`+arrows | nudge Bregma 1 px |
+| **drag the magenta `+`** | drag Bregma and every box with it |
+| double-click | put Bregma there (all boxes translate with it) |
+| `ctrl`+arrows | move Bregma + all boxes 1 px |
+| `ctrl`+`shift`+arrows | move Bregma + all boxes 5 px |
+
+*Scale the whole layout* — the green `x` is **Lambda**, on the midline
+`lambda_offset` rows posterior to Bregma. It is a *ruler*, not a second anchor: its
+distance from Bregma is the scale the offsets are in, so dragging it does not move one
+landmark, it rescales the entire atlas about Bregma. This is the knob for "this brain
+sits bigger in the field of view than the one the atlas came from" — line the `x` up
+with the animal's real Lambda and every box moves outward in proportion.
+
+| | |
+|---|---|
+| **drag the green `x`** | rescale the layout about Bregma |
+| `,` / `.` | distance −1 / +1 px |
+| `<` / `>` | distance −5 / +5 px |
+| `l` | back to scale 1.000× (the reference layout) |
+
+Two properties worth knowing, because both are deliberate:
+
+- **Box sizes stay fixed** by default; only the positions scale. Holding each box's
+  area constant keeps the number of pixels behind every ROI mean — and therefore its
+  noise level — identical across animals, so a group comparison is not confounded by
+  how big each brain happened to sit in the frame. Set
+  `RUN_CONFIG["lambda_scales_box_size"] = True` for the true similarity transform,
+  i.e. boxes that cover a fixed *fraction* of cortex instead of a fixed area.
+- **Scaling is reversible.** Every rescale is computed from a stored reference layout,
+  never from its own last output, so `30 → 44 → 30` lands back on the exact same
+  integers instead of drifting by a rounding step each way. Adjusting a box by hand
+  re-anchors that reference (otherwise the next Lambda nudge would throw your
+  adjustment away), which is also why `l` and `r` differ: `l` removes only the stretch,
+  `r` discards everything back to how the page opened.
+
+Get the constellation onto the right anatomy this way *first* — Bregma, then Lambda;
+only then adjust individual boxes:
+
+| | |
+|---|---|
+| drag inside a box | move it |
+| drag a corner handle | resize it (all four corners have one) |
 | arrows / `shift`+arrows | nudge the selected box 1 / 5 px |
 | `+` / `-` | grow / shrink the selected box by 1 px on every side |
+
+Everything else:
+
+| | |
+|---|---|
 | `n` / `p` | next / previous session |
 | `s` / `S` | save this session / save **every** session |
 | `w` | write the **shared** ROI set (one file for all sessions) |
-| `a` / `A` | apply this layout to all sessions — `A` also copies Bregma |
-| `r` | reset this page to how it started |
+| `a` / `A` | apply this layout to all sessions (boxes **and** scale) — `A` also copies Bregma |
+| `r` | reset this page to how it started (boxes, Bregma **and** scale) |
 | `[` / `]` | display contrast |
 | `h` / `q` | print help / quit |
+
+Only Bregma is clamped to the frame, not the boxes it carries — so a 22-box layout
+dragged near an edge *will* push boxes out. They turn **red**, the status line names
+them and counts them, and the save is **refused**. Clamping the boxes instead would
+mean silently squashing the layout to fit, which is the one thing offsets exist to
+prevent.
 
 A box dragged off the frame turns **red** and the save is **refused** with a message
 naming it. That is the same condition [`wfci.roi.box_slices_for`](../src/wfci/roi.py)
@@ -129,6 +207,7 @@ grid: [128, 128]            # the FINAL frame these offsets were drawn for
 source: drawn with roi_editor.py on the cerebellar_rs preview grid; folder \\...\R1\t1
 bregma_row: 120             # the Bregma the boxes were drawn from (RUN_CONFIG units)
 bregma_col: 134
+lambda_row_offset: 30       # the scale these offsets are at (FINAL-grid rows)
 boxes:                      # ORDER IS THE COLUMN ORDER OF R — do not sort
   Laterale_L: {row_start: 21, row_end: 26, col_start: -34, col_end: -29}
   Verme_L:    {row_start: 22, row_end: 27, col_start: -12, col_end: -7}
@@ -137,11 +216,18 @@ boxes:                      # ORDER IS THE COLUMN ORDER OF R — do not sort
 ```
 
 - It is a **superset of the library's atlas file**: `wfci.load_atlas` reads it
-  unchanged and ignores the two `bregma_*` keys. So the same file works anywhere an
-  atlas is accepted (e.g. `run_pipeline.py --atlas`).
+  unchanged and ignores the three extra top-level keys. So the same file works anywhere
+  an atlas is accepted (e.g. `run_pipeline.py --atlas`).
 - **Bregma travels with the boxes** because the boxes are offsets *from* it. Using one
   animal's boxes with another's Bregma moves every ROI while still producing numbers.
   `load_roi_set` returns both; the run scripts apply both.
+- `lambda_row_offset` is a **record, not an instruction**: the offsets in the file are
+  already scaled to it, so a reader that ignores it still gets the right geometry. That
+  is why it is *not* part of `load_roi_set`'s tuple — making the run scripts unpack a
+  value they must not act on would invite applying the scale twice. Only the editor
+  reads it (`load_lambda_offset`), to resume from the same reference. Unlike
+  `bregma_row` it is in **final-grid rows**, the same units as the box offsets, not
+  doubled.
 - `bregma_row` is in `RUN_CONFIG` units — the scripts apply `// 2` to reach the
   final-grid coordinate (`y_1 = bregma_row // 2`), matching the MATLAB
   `y_1 = floor(121/2)`. The editor writes `2 × y_1`, so a Bregma of 121 comes back as
@@ -196,12 +282,13 @@ behaviour exactly. The chosen path is written into each unit's `.npz` and into
 
 | File | Change |
 |------|--------|
-| `roi_editor.py` | **new** — the editor, plus `load_roi_set` / `save_roi_set` / `preview_image`, importable without opening a window |
+| `roi_editor.py` | **new** — the editor, plus `load_roi_set` / `load_lambda_offset` / `save_roi_set` / `scale_boxes` / `preview_image`, importable without opening a window |
 | `run_intermingle_rs.py` | `roi_set` config key + `--roi-set`; new `apply_roi_set()` helper; `roi_set` saved in the `.npz` |
 | `run_botox_batch.py` | `roi_set_dir` / `roi_set` config keys + flags; `resolve_roi_set()`; `roi_set` in the `.npz` and the summary CSV |
 | `src/wfci/` | **unchanged** — the editor is study policy, the library keeps the mechanism (P2) |
 
 Verified: the editor's geometry conversion agrees box-for-box with
 `wfci.roi.box_slices_for`; a saved file round-trips through `load_roi_set` **and**
-`wfci.load_atlas`; an edited 2-ROI set runs end-to-end and yields a 2×2 `R_mean`; the
-full test suite (156 tests) still passes.
+`wfci.load_atlas`; an edited 2-ROI set runs end-to-end and yields a 2×2 `R_mean`;
+rescaling round-trips to the identical integers and keeps the 11 mirrored left/right
+pairs mirrored; the full test suite (207 tests) still passes.
