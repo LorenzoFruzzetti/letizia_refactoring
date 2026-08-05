@@ -359,14 +359,25 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   `run_botox_batch.py` (manifest batch; one analysis per `t#` recording by
   default, or one concatenated trial per animal with `--merge-recordings`).
 - ROI geometry utility: `roi_editor.py` — interactive placement of the ROI boxes and
-  Bregma on the first image of each recording (rendered on the final analysis grid),
-  writing `roi_sets/<key>.yaml`. Built on **pyqtgraph/Qt** (`pg.RectROI` per box,
-  `pg.TargetItem` for Bregma, whole-pixel snapping); Qt is imported inside
-  `ROIEditor._build_ui`, never at module level, so importing the module for
-  `load_roi_set` stays GUI-free and works headless. Covered by
-  `tests/test_roi_editor.py` under `QT_QPA_PLATFORM=offscreen`. That file is an atlas file plus `bregma_row` /
-  `bregma_col`, so `wfci.load_atlas` reads it unchanged; `roi_editor.load_roi_set`
-  returns `(atlas, bregma_row, bregma_col)`. The run scripts take it via
+  the two landmarks on the first image of each recording (rendered on the final
+  analysis grid), writing `roi_sets/<key>.yaml`. Built on **pyqtgraph/Qt**
+  (`pg.RectROI` per box, `pg.TargetItem` per landmark, whole-pixel snapping); Qt is
+  imported inside `ROIEditor._build_ui`, never at module level, so importing the module
+  for `load_roi_set` stays GUI-free and works headless. Covered by
+  `tests/test_roi_editor.py` under `QT_QPA_PLATFORM=offscreen`.
+  **Bregma** is the origin: moving it translates the layout rigidly (the offsets are
+  not touched). **Lambda** is a midline landmark `lambda_row_offset` rows posterior;
+  its distance from Bregma is the *scale* the offsets are in, so moving it rescales
+  every box about Bregma via `roi_editor.scale_boxes` — centres only by default, sizes
+  held fixed so each ROI mean keeps averaging the same number of pixels
+  (`lambda_scales_box_size` opts into the full similarity transform). Rescaling is
+  always derived from `Session.base_boxes` at `Session.base_lambda`, never from its own
+  last output, so it round-trips exactly; a direct box edit `rebase()`s that reference.
+  The file is an atlas file plus `bregma_row` / `bregma_col` / `lambda_row_offset`, so
+  `wfci.load_atlas` reads it unchanged; `roi_editor.load_roi_set` returns
+  `(atlas, bregma_row, bregma_col)` and the Lambda distance is read separately by
+  `load_lambda_offset` — the saved boxes are already scaled, so the pipeline must not
+  apply it again. The run scripts take it via
   `--roi-set` (one file) or `--roi-set-dir` (per `<day>_<animal>`), applied with
   `run_intermingle_rs.apply_roi_set`, which `dataclasses.replace`s the profile's
   atlas. See `docs/ROI_EDITOR.md`.

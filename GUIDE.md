@@ -172,7 +172,7 @@ Needs access to a real folder; it won't run on the tiny sample.
 | [benchmarks/benchmark_modalities.py](benchmarks/benchmark_modalities.py) | Compare the 4 layouts on time/RAM/correctness. |
 | [benchmarks/benchmark_scaling.py](benchmarks/benchmark_scaling.py) | Estimate time/RAM for a big folder from short runs. |
 | [src/inspect_channel_intensity.py](src/inspect_channel_intensity.py) | Utility: inspect an interleaved folder's odd/even channel brightness (which is GCaMP?). Writes a CSV. |
-| [roi_editor.py](roi_editor.py) | **Utility (opens a pyqtgraph/Qt window).** Shows the first image of each recording on the analysis grid; drag the ROI boxes, or drag Bregma to move the whole layout at once, then save a ROI set. See [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md). |
+| [roi_editor.py](roi_editor.py) | **Utility (opens a pyqtgraph/Qt window).** Shows the first image of each recording on the analysis grid; drag the ROI boxes, drag Bregma to move the whole layout at once, or drag Lambda to rescale it, then save a ROI set. See [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md). |
 | [run_intermingle_rs.py](run_intermingle_rs.py) | Study script: RS connectivity on interleaved folders. Point `--folder` at one recording, an animal, or a whole day — every folder holding TIFFs below it is analysed separately into `<output-dir>\<animal>\<t#>\` (`--roi-set` to use drawn ROIs). |
 | [run_botox_batch.py](run_botox_batch.py) | Study script: the BOTOX manifest batch — one analysis per `t#` recording, each in its own output subfolder (`--merge-recordings` to concatenate them into one trial per animal instead; `--roi-set-dir` / `--roi-set` for drawn ROIs). |
 | [scan_botox_dataset.py](scan_botox_dataset.py) | Study script: scans the dataset share and writes `manifests/botox_restani_manifest.csv`. |
@@ -255,7 +255,11 @@ Draw them instead of guessing coordinates:
 "$CONDA" run --no-capture-output -n letizia python roi_editor.py   # window: drag, then 's'
 "$CONDA" run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full
 ```
-Press `A` then `w` in the editor to write ONE layout used by every session instead.
+Two drags do most of the work: the magenta `+` (**Bregma**) translates the whole layout,
+and the green `x` (**Lambda**) rescales it — its distance from Bregma is the scale the
+box offsets are in, so putting both markers on the animal's real landmarks fits the
+atlas to *that* brain instead of nudging 22 boxes one at a time. Press `A` then `w` to
+write ONE layout used by every session instead.
 Full walkthrough: [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md).
 
 ### …compare groups of animals (healthy vs disease)

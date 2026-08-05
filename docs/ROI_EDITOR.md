@@ -207,6 +207,7 @@ grid: [128, 128]            # the FINAL frame these offsets were drawn for
 source: drawn with roi_editor.py on the cerebellar_rs preview grid; folder \\...\R1\t1
 bregma_row: 120             # the Bregma the boxes were drawn from (RUN_CONFIG units)
 bregma_col: 134
+downsample: 0.5             # profile factor used for each of the two downsamples
 lambda_row_offset: 30       # the scale these offsets are at (FINAL-grid rows)
 boxes:                      # ORDER IS THE COLUMN ORDER OF R — do not sort
   Laterale_L: {row_start: 21, row_end: 26, col_start: -34, col_end: -29}
@@ -216,7 +217,7 @@ boxes:                      # ORDER IS THE COLUMN ORDER OF R — do not sort
 ```
 
 - It is a **superset of the library's atlas file**: `wfci.load_atlas` reads it
-  unchanged and ignores the three extra top-level keys. So the same file works anywhere
+  unchanged and ignores the extra top-level metadata keys. So the same file works anywhere
   an atlas is accepted (e.g. `run_pipeline.py --atlas`).
 - **Bregma travels with the boxes** because the boxes are offsets *from* it. Using one
   animal's boxes with another's Bregma moves every ROI while still producing numbers.

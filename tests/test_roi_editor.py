@@ -609,6 +609,8 @@ def test_a_valid_layout_saves_and_round_trips(tmp_path):
     assert dict(atlas) != dict(CORTEX_22.boxes)
     assert (row, col) == (session.bregma_row, session.bregma_col)
     assert load_lambda_offset(out) == 34
+    import yaml
+    assert yaml.safe_load(out.read_text(encoding="utf-8"))["downsample"] == 0.5
     assert session.dirty is False
 
 

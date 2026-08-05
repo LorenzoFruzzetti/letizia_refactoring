@@ -226,6 +226,10 @@ Images are 16-bit; math is done in float64 to match MATLAB's `double`.
   applied internally to get the downsampled `y_1`, `x_2`).
 - ROI box offsets — defaults live in `wfci.config.ROIConfig` and match
   `matlab/step3_ROI_functional_connectivity.m`; override per animal if needed.
+  If a brain sits bigger or smaller in the field of view than the atlas assumes,
+  scale the offsets with `roi_editor.py`'s Bregma → **Lambda** distance rather than
+  retyping them; the editor writes out the already-scaled boxes, so nothing in the
+  pipeline changes.
 - Frame `trim` (default 20 → MATLAB `21:end`), baseline window, and correlation
   window — the resting-state vs stimulated defaults are wired into
   `run_resting_state` / `run_stimulated`.

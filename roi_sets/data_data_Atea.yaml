@@ -1,16 +1,10 @@
-name: cortex22_roi_set
+name: data_data_Atea
 grid: [128, 128]
-source: wfci.atlases.CORTEX_22, unmodified -- the 22 img_av(y_1+.., x_2+..) boxes
-  from the MATLAB cortical scripts. Bregma is the manifest default (row=121, col=134);
-  re-draw per animal with roi_editor.py.
-bregma_row: 121
-bregma_col: 134
+source: drawn with roi_editor.py on the cortical_gsr preview grid; folder data\data_Atea
+bregma_row: 124
+bregma_col: 126
 downsample: 0.5
-# The Bregma->Lambda distance these offsets are declared to be drawn at, in
-# final-grid rows. Nothing in the pipeline reads it: the boxes below are already at
-# this scale. roi_editor.py uses it as the reference a per-animal rescale is measured
-# against (drag the green x, or , / . ).
-lambda_row_offset: 30
+lambda_row_offset: 55
 boxes:
   M2L_alta: {row_start: -28, row_end: -23, col_start: -15, col_end: -10}
   M2L_bassa: {row_start: -10, row_end: -5, col_start: -10, col_end: -5}

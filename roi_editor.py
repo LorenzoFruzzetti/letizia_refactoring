@@ -138,7 +138,7 @@ from wfci import (
 RUN_CONFIG: dict[str, Any] = {
     # Where the sessions come from. Give a manifest (from scan_botox_dataset.py)
     # OR set it to None and list folders explicitly below.
-    "manifest": r"manifests\botox_restani_manifest.csv",
+    "manifest": None, #r"manifests\botox_restani_manifest.csv",
     # Manifest only: one editor page per animal ("animal" -- previews that
     # animal's FIRST recording, which is what the per-animal Bregma applies to)
     # or one page per t# recording ("recording" -- check every folder's first
@@ -146,7 +146,7 @@ RUN_CONFIG: dict[str, Any] = {
     "scope": "animal",
     # Used when "manifest" is None: the interleaved folders to inspect.
     "folders": [
-        r"\\146.48.88.209\share2\BOTOX_RESTANI\260611\R1\t1",
+        r"data\data_Atea",
     ],
     # Pipeline whose ROI atlas is the starting layout (and whose downsampling
     # defines the preview grid). "cortical_gsr" carries the 22-box CORTEX_22
@@ -170,7 +170,7 @@ RUN_CONFIG: dict[str, Any] = {
     # reference: the atlas as shipped is declared to be drawn at this distance, and
     # dragging Lambda to D rescales every box by D / this. Only the starting value
     # lives here; a ROI set that carries lambda_row_offset overrides it.
-    "lambda_offset": 30,
+    "lambda_offset": 55,
     # Whether rescaling also scales each box's SIZE, or only its position.
     # False (default) keeps every box the size it was drawn -- so the same number of
     # pixels is averaged for every animal, and per-ROI noise stays comparable across
@@ -184,7 +184,7 @@ RUN_CONFIG: dict[str, Any] = {
     "shared_name": "shared_roi_set.yaml",
     # Start each session from <roi_set_dir>/<key>.yaml when that file exists, so
     # re-running the editor picks up where you left off.
-    "load_existing": True,
+    "load_existing": False,
     # Seed EVERY session from this one ROI set instead of the profile's atlas
     # (e.g. the shared file, to adjust it per animal). None = profile atlas.
     "start_from": None,
@@ -220,7 +220,7 @@ HELP = (
     "[ / ]: contrast    r: reset page\n"
     "n / p: next / prev session    s: save this session    S: save all    "
     "w: write SHARED set\n"
-    "a: apply these boxes to all sessions    A: apply boxes AND Bregma to all    "
+    "a: apply boxes + scale to all sessions    A: also copy Bregma    "
     "h: help    q: quit"
 )
 
@@ -237,12 +237,13 @@ def save_roi_set(
     name: str,
     source: str,
     lambda_offset: int | None = None,
+    downsample: float = 0.5,
 ) -> Path:
     """Write a ROI set (boxes + Bregma + Lambda + grid) to YAML (or JSON, by extension).
 
     The layout is the library's atlas file plus ``bregma_row`` / ``bregma_col`` /
-    ``lambda_row_offset``, so ``wfci.load_atlas`` reads the same file and ignores
-    those three keys. ``sort_keys=False`` is not cosmetic: box order IS the column
+    ``downsample`` / ``lambda_row_offset``, so ``wfci.load_atlas`` reads the same
+    file and ignores those metadata keys. ``sort_keys=False`` is not cosmetic: box order IS the column
     order of ``R``, so alphabetising the file would silently relabel every matrix
     built from it.
 
@@ -257,6 +258,7 @@ def save_roi_set(
         "source": source,
         "bregma_row": int(bregma_row),
         "bregma_col": int(bregma_col),
+        "downsample": float(downsample),
         **({} if lambda_offset is None else {"lambda_row_offset": int(lambda_offset)}),
         "boxes": {
             label: {f: int(getattr(box, f)) for f in BOX_FIELDS}
@@ -1070,7 +1072,8 @@ class ROIEditor:
                   f"folder {session.folder}")
         written = save_roi_set(path, session.boxes, session.bregma_row, session.bregma_col,
                                grid=session.image.shape, name=name, source=source,
-                               lambda_offset=session.lambda_offset)
+                               lambda_offset=session.lambda_offset,
+                               downsample=get_profile(self.profile_name).downsample)
         session.saved_to = str(written)
         session.dirty = False
         self.say(f"Saved {name} -> {written}")

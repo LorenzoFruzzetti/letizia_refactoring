@@ -1,0 +1,5 @@
+- Segnare le coordinate x e y del bregma e del lambda (prendi il valore tra
+parentesi su Image J perchè è quello che fa riferimento al re-size) e
+moltiplicare la differenza di Y tra i due per 0.04 per trasformare in
+millimetri. (Ylambda - Ybregma x 0,04). La distanza deve essere 4.2 sennò mi
+riposiziono più su o giù 🡪 cercare il bregma giusto. 

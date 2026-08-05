@@ -8,6 +8,12 @@ Each file holds the ROI boxes **and** the Bregma they were drawn from — they a
 measurement and must not be separated. The layout is a superset of the library's atlas
 file, so `wfci.load_atlas` reads it unchanged.
 
+`lambda_row_offset` records the Bregma → Lambda distance the offsets are scaled to, in
+final-grid rows (not doubled like `bregma_row`). Nothing in the pipeline reads it: the
+boxes are already at that scale. The editor uses it as the reference a per-animal
+rescale is measured against, so reopening a file resumes at scale 1.000× instead of
+stretching it again.
+
 ## `cortex22_roi_set.yaml` — the 22-box cortical layout (checked in)
 
 The only file here not drawn by hand. It is [`wfci.atlases.CORTEX_22`](../src/wfci/atlases.py)
@@ -21,8 +27,11 @@ window and the no-mask/no-GSR chain are unchanged — you get a 22×22 `R` inste
 4×4. The full `cortical_gsr` pipeline (trim 0 + brain mask + GSR) is a separate
 choice; switch the profile itself for that.
 
-Its Bregma is a **default, not a measurement for your animal**. Open the editor,
-check the boxes against the anatomy, and save per-animal files — those override it.
+Its Bregma is a **default, not a measurement for your animal**, and its
+`lambda_row_offset: 30` is the distance those published coordinates are declared to be
+drawn at, not a measurement either. Open the editor, put Bregma and Lambda on the
+animal's own landmarks (which rescales the boxes to that brain), check the result
+against the anatomy, and save per-animal files — those override it.
 
 Use them:
 
