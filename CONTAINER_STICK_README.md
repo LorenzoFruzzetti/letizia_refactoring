@@ -159,6 +159,11 @@ machine has 32 cores and 125 GB RAM and `/dev/kvm` is worth checking for a VM in
 
 ## 6. Porting a project onto this — the intended pattern
 
+> For the `letizia` / wfci project specifically, this pattern is already
+> implemented: see [CONTAINER_DEPLOY.md](CONTAINER_DEPLOY.md) for the clone →
+> build → run → attach-an-agent walkthrough, and `docker/Dockerfile` +
+> `docker/run.sh` for the concrete image and launcher.
+
 **Keep the source and all caches on the internal disk. Bind-mount them in.**
 
 The stick is USB 2 at 40 MB/s, and flash handles many small writes badly. Image

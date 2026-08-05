@@ -26,7 +26,9 @@ See [MERGING_PLAN.md](MERGING_PLAN.md) Phase 8.
 > **Other docs:** [GUIDE.md](GUIDE.md) — a plain-language tour of every script and
 > how to run it; [LIBRARY.md](LIBRARY.md) — the full programming API and the rules
 > for editing the package; [REFERENCE.md](REFERENCE.md) — the terse canonical
-> technical map.
+> technical map; [CONTAINER_DEPLOY.md](CONTAINER_DEPLOY.md) — running the project
+> in a Docker container on an old Linux host, with VS Code and Claude Code
+> attached.
 
 The cerebellar ROIs are the left/right **vermis** (`Verme_L/R`) and the left/right
 **lateral hemispheres** (`Laterale_L/R`). The cortical ROIs are 22 regions (11 per
@@ -453,6 +455,11 @@ letizia/
 │                               cortex22_roi_set.yaml = the 22 CORTEX_22 boxes, checked in
 ├── manifests/                ← dataset manifests (CSV)
 ├── docs/                     ← study write-ups (ROI_EDITOR.md, INTERMINGLE_RS_R1_t1.md)
+├── CONTAINER_DEPLOY.md       ← deploy onto the Ubuntu 16.04 container host
+├── CONTAINER_STICK_README.md ← the USB Docker store that host uses
+├── docker/                   ← Ubuntu 22.04 dev image (glibc 2.35)
+│   ├── Dockerfile            ← conda env + Node/Claude Code + VS Code CLI + Qt libs
+│   └── run.sh                ← host-side launcher (bind-mounts, X11, stick check)
 ├── .env/                     ← environment contract
 │   ├── environment.yml       ← conda env `letizia`
 │   ├── requirements.txt      ← pip deps
