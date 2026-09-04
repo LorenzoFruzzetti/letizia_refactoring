@@ -43,6 +43,7 @@ from roi_editor import (  # noqa: E402
     ROIEditor,
     Session,
     pixel_bounds,
+    rotate_boxes,
     scale_boxes,
 )
 from wfci.atlases import CORTEX_22  # noqa: E402
@@ -84,6 +85,66 @@ def offsets(session) -> dict[str, tuple[int, ...]]:
     """Every box as its raw Bregma offsets -- what actually gets saved."""
     return {label: tuple(getattr(box, f) for f in BOX_FIELDS)
             for label, box in session.boxes.items()}
+
+
+def test_rotate_boxes_moves_centres_around_bregma_and_preserves_size():
+    from wfci import Box
+
+    boxes = {"roi": Box(9, 13, 19, 25)}
+    rotated = rotate_boxes(boxes, 90)["roi"]
+
+    assert rotated.row_end - rotated.row_start == 4
+    assert rotated.col_end - rotated.col_start == 6
+    assert (rotated.row_start + rotated.row_end) / 2 == 22
+    assert (rotated.col_start + rotated.col_end) / 2 == -11
+
+
+def test_rotation_shortcuts_rotate_the_whole_constellation():
+    editor = make_editor()
+    before = offsets(editor.session)
+
+    press(editor, "X", shift=True)
+
+    assert offsets(editor.session) != before
+    assert editor.session.dirty
+
+
+def test_bake_all_images_saves_alignment_tiffs(tmp_path, monkeypatch):
+    editor = make_editor(n_sessions=2)
+    editor.args.roi_set_dir = str(tmp_path)
+    writes = []
+
+    def fake_imwrite(path, image):
+        writes.append((Path(path), image.copy()))
+
+    monkeypatch.setattr("roi_editor.tifffile.imwrite", fake_imwrite)
+    editor.bake_all_images()
+
+    assert [path for path, _image in writes] == [
+        tmp_path / "alignment_images" / "sess0.tif",
+        tmp_path / "alignment_images" / "sess1.tif",
+    ]
+    assert all(image.dtype == np.float32 for _path, image in writes)
+    assert all(image.shape == GRID for _path, image in writes)
+
+
+def test_bake_all_images_loads_existing_tiff_without_rewriting(tmp_path, monkeypatch):
+    editor = make_editor()
+    editor.args.roi_set_dir = str(tmp_path)
+    image_dir = tmp_path / "alignment_images"
+    image_dir.mkdir()
+    cached = np.full(GRID, 17, dtype=np.float32)
+    cached_path = image_dir / "sess0.tif"
+    import tifffile
+    tifffile.imwrite(cached_path, cached)
+
+    monkeypatch.setattr(
+        "roi_editor.tifffile.imwrite",
+        lambda *_args, **_kwargs: pytest.fail("an existing preview was rewritten"),
+    )
+    editor.bake_all_images()
+
+    np.testing.assert_array_equal(editor.sessions[0].image, cached)
 
 
 def press(editor, key_name: str, ctrl: bool = False, shift: bool = False) -> None:

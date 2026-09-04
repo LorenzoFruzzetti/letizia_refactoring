@@ -108,6 +108,13 @@ This is the single easiest thing to get wrong. Every rule here is a real trap.
 - **`grid` is the final frame size** an atlas was drawn for (e.g. `(128, 128)` for
   512² raw after two 0.5× downsamples). Offsets are pixels, so they do **not**
   transfer between fields of view — see [§5.1](#51-geometry--configpy--atlasespy).
+- **One exception, for output files only: the pixel dumps are `[time, y, x]`.**
+  `wfci.dump.PixelDump` writes frame-major because each frame is then one
+  contiguous write into a preallocated memmap (`[y, x, time]` would stride every
+  frame across the whole file), and because that is `tifffile`'s and ImageJ's
+  order. This applies to the written `.npy` only — nothing in the numeric path
+  changes. Their storage dtype (float16/float32) is likewise a file format
+  choice, not a relaxation of the float64 rule above.
 - **Units:** ΔF/F is a **percentage**; `R` is dimensionless.
 - **NaN is the "no data here" marker.** Masked-out pixels are `NaN` for their whole
   time-series; every reduction downstream uses `nanmean`. GSR's `drop_pixel` drops
@@ -249,7 +256,8 @@ extract_roi_timeseries(dff_stack[y,x,time,trial], cfg, expected_grid=None)
 
 functional_connectivity(temp_roi[time,n_roi,trial], window=slice(None))
     -> (R[n_roi,n_roi,trial], R_mean[n_roi,n_roi], averaged_traces[time,n_roi])
-    # per-trial np.corrcoef over `window`, then trial means. Matches MATLAB corr.
+    # per-trial explicit float64 Pearson reductions over `window`, then trial
+    # means. Matches MATLAB corr without dispatching the small matrix to BLAS.
 ```
 
 ### 5.6 Overlay (step 2) — `visualize.py`
@@ -315,6 +323,53 @@ functions accept a `FrameSource` or a bare path (coerced — invariant I7).
 `T_B(t) = mean_B(p(t)) − g(t)·mean_B(a) − mean_B(b)` — no regressed stack needed.
 It refuses (raises) if a pixel is NaN in some frames but not all (the static-NaN
 precondition), pointing you to `--no-streaming`.
+
+### 5.8b Per-pixel dumps — `dump.py`
+
+```python
+PixelDump(out_dir, suffix, n_time, region=None, downsample=0.5,
+          dff_dtype=np.float16, f_dtype=np.float32, metadata=None)
+    .baselines(mean_f, mean_r)          # once, after pass 1
+    .frame(idx, g_half, e_half, dff_q)  # once per frame, from inside pass 2
+    .close()                            # flush + write pixels_meta_<suffix>.npz
+```
+
+The pipeline reduces every frame to `n_roi` box means and discards the pixels.
+`PixelDump` is an optional **observer** that writes them out on the way past, so
+questions that are not one of the predefined boxes (a different atlas, a
+seed-pixel map, a check on the correction itself) can be answered without
+re-reading the raw TIFFs.
+
+Attach it with `stream_trial_roi(..., pixel_dump=dump)`, or across trials with
+`run_streaming(..., pixel_dump_factory=lambda i: dump_for(i))`. It writes three
+volumes — `pixels_dff_*.npy` (the corrected ΔF/F the ROI means are taken from)
+and `pixels_f_gcamp_*.npy` / `pixels_f_emo_*.npy` (raw fluorescence per channel,
+brought onto the final grid) — plus a sidecar `.npz` holding `mean_f`/`mean_r`
+and the crop origin.
+
+Non-negotiables it is built around:
+
+* **it must not change the numbers.** It only reads pass 2's locals; the ROI
+  traces are byte-identical with and without it.
+* **it must not cost a pass.** Writing happens inside the existing pass 2, so
+  I10 (exactly two passes) and I2 (one frame resident) still hold. Measured on a
+  real 3000-frame recording: 300.9 s with the dump, 301.0 s without.
+* **it never clips and never overflows silently.** A `region` outside the grid
+  raises; a value too large for the target dtype raises rather than writing `inf`.
+* **GSR raises.** `_stream_pass2_gsr` never materialises a post-GSR per-pixel
+  frame (that is the point of accumulating `a`/`b`/`g_vec`), and producing one
+  would need a third pass. Dumping the pre-GSR pixels under that name would be
+  worse than refusing.
+
+`dff` is dumped rather than derived on purpose: the pipeline corrects at half
+resolution and downsamples the *result*, so a ratio recomputed from the
+already-downsampled F volumes is close but not equal. The raw-F volumes are
+nonetheless exact, and `F / mean` gives the per-channel MATLAB `If2`/`Ir2`.
+
+Which region, which dtypes and which directory are **policy** and live in the
+study script (P2) — see `run_botox_batch.py`'s `save_data*` keys.
+
+---
 
 ### 5.9 Group layer — `cohort.py` (**generic; no study knowledge, P2**)
 
@@ -500,6 +555,7 @@ gsr.py         global signal regression (closed-form OLS)
 roi.py         step 3: box_slices_for (bounds check), ROI means, connectivity
 profiles.py    Profile presets = which pipeline
 streaming.py   constant-memory pipeline + streaming GSR (2 passes)
+dump.py        optional per-pixel .npy dumps written from inside pass 2
 visualize.py   step 2: ROI overlay
 pipeline.py    orchestration: correction -> [mask] -> [GSR] -> ROI -> connectivity
 cohort.py      generic group layer (stack/select/mean/DIFF)
@@ -540,6 +596,7 @@ significance.py generic figures (mask by adjacency, network, bars)
 | `test_cli.py` | `--profile` / `--mode` alias / mask rules |
 | `test_cohort.py` | group means/DIFF vs hand computation + **P2 grep** |
 | `test_significance.py` | masking, per-node reductions, headless figures |
+| `test_dump.py` | pixel dumps: inert on the numbers, still 2 passes, files reproduce `temp_roi` |
 
 Run all: `"$CONDA" run -n letizia python -m pytest tests/ -q`.
 

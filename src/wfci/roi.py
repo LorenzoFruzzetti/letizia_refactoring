@@ -136,11 +136,28 @@ def extract_roi_timeseries(
 def _corrcoef_matlab(x: np.ndarray) -> np.ndarray:
     """Pearson correlation of columns, matching MATLAB ``corr(X)``.
 
-    ``x`` is ``[time, regions]``; returns ``[regions, regions]``. Uses
-    ``np.corrcoef`` (variables in columns), which yields the same Pearson
-    coefficients as MATLAB ``corr`` (the N vs N-1 normalisation cancels).
+    ``x`` is ``[time, regions]``; returns ``[regions, regions]``. The Pearson
+    numerator and norms are reduced explicitly instead of routing this small
+    matrix through ``np.corrcoef``/BLAS. On the Windows analysis machine the BLAS
+    DLL can fail its delayed load inside spawned workers (native exception
+    ``0xc06d007f``) after both expensive streaming passes have completed.
+
+    MATLAB ``corr`` and ``np.corrcoef`` both centre each column; the N vs N-1
+    normalisation cancels between covariance and standard deviations. Constants
+    therefore produce NaN through 0/0, as before. Elementwise reductions also
+    preserve NaN propagation rather than silently omitting missing samples.
     """
-    return np.corrcoef(x, rowvar=False)
+    values = np.asarray(x, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError(f"x must be [time, regions], got shape {values.shape}")
+    centred = values - np.mean(values, axis=0, keepdims=True)
+    # [time, regions, regions] is small here (at most 2980 x 22 x 22) and avoids
+    # matrix multiplication, whose BLAS dispatch is the native failure point.
+    cross = np.sum(centred[:, :, None] * centred[:, None, :], axis=0)
+    sums_of_squares = np.sum(centred * centred, axis=0)
+    denominator = np.sqrt(sums_of_squares[:, None] * sums_of_squares[None, :])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return cross / denominator
 
 
 def functional_connectivity(

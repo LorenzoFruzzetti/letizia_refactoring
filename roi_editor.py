@@ -65,6 +65,11 @@ SCALING the layout, with the Bregma -> Lambda distance:
     drag the green x          rescale about Bregma   , / .    distance -1 / +1 px
     < / >                     distance -5 / +5 px    l        back to scale 1.000x
 
+ROTATING the constellation around Bregma (boxes remain axis-aligned):
+
+    z / x                     rotate left / right 1 degree
+    Z / X                     rotate left / right 5 degrees
+
 Adjusting ONE box, once the layout as a whole sits right:
 
     drag inside a box        move it            drag a corner handle  resize it
@@ -73,11 +78,19 @@ Adjusting ONE box, once the layout as a whole sits right:
 Everything else:
 
     n / p                    next / prev session
+    c                        copy the PREVIOUS page's layout onto this one
     s / S                    save this session / save every session
+    ctrl+s                   save only the sessions with unsaved changes
     w                        write the SHARED roi set (one file for all sessions)
     a / A                    apply this layout to all sessions (A also copies Bregma)
     r                        reset this session to how it started
+    Resume (button)          reload this page from the saved set on disk
     [ / ]                    display contrast    h    print this help    q  quit
+
+Paging carries work forward: the first time you open a page it takes the layout you
+are looking at now, so an adjustment made once follows you through a run of similar
+recordings. A page that already has its own saved ROI set is the exception -- those
+boxes were drawn for that recording and are kept. `c` overrides either way.
 
 Run it (``--no-capture-output`` matters: plain ``conda run`` holds every print until
 the process exits, so an interactive script looks like it is doing nothing):
@@ -115,10 +128,12 @@ import math
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import tifffile
 import yaml
 
 from wfci import (
@@ -177,8 +192,14 @@ RUN_CONFIG: dict[str, Any] = {
     # a group. True is the true similarity transform: use it when the boxes are meant
     # to cover a fixed fraction of each animal's cortex rather than a fixed area.
     "lambda_scales_box_size": False,
-    # Where ROI sets are read from and written to.
+    # Where ROI sets are WRITTEN (and, unless roi_seed_dir is set, also read from).
     "roi_set_dir": r"roi_sets",
+    # Optional read-only directory of starting layouts. When set, a page with no saved
+    # set of its own in roi_set_dir is seeded from <roi_seed_dir>/<key>.yaml instead of
+    # the profile atlas, and saves still go to roi_set_dir -- so a verified reference
+    # set can be opened, inspected and adjusted without ever being overwritten.
+    # None = read starting layouts from roi_set_dir, the original single-directory behaviour.
+    "roi_seed_dir": None,
     # Filename of the ONE shared set written by the 'w' key -- the "same ROIs for
     # every session" option.
     "shared_name": "shared_roi_set.yaml",
@@ -188,6 +209,11 @@ RUN_CONFIG: dict[str, Any] = {
     # Seed EVERY session from this one ROI set instead of the profile's atlas
     # (e.g. the shared file, to adjust it per animal). None = profile atlas.
     "start_from": None,
+    # Pre-computed 128×128 anatomy TIFFs, one per session, named <key>.tif.
+    # When set, sessions are built directly from these images -- no interleaved
+    # recording folder is needed. Overrides "manifest" and "folders".
+    # roi_sets/alignment_images already holds one image per recorded session.
+    "image_dir": r"roi_sets\alignment_images",
     "prefer_cli_args": True,
 }
 
@@ -214,14 +240,21 @@ HELP = (
     "scale\n"
     "   also: , / . = distance -1 / +1 px    < / > = -5 / +5 px    "
     "l = back to scale 1.000x\n"
+    "ROTATE CONSTELLATION: z / x = left / right 1 degree    "
+    "Z / X = left / right 5 degrees\n"
+    "FLIP CONSTELLATION: f = mirror entire layout left-right (around y-axis)    "
+    "v = mirror up-down (around x-axis)\n"
     "ONE BOX: left-drag it to move, left-drag a corner to resize, "
     "arrows / shift+arrows to nudge 1 / 5 px\n"
     "+ / -: grow / shrink box    "
     "[ / ]: contrast    r: reset page\n"
-    "n / p: next / prev session    s: save this session    S: save all    "
+    "n / p: next / prev session    c: copy the PREVIOUS page's layout onto this one\n"
+    "s: save this session    S: save all    ctrl+s: save only the modified ones    "
     "w: write SHARED set\n"
     "a: apply boxes + scale to all sessions    A: also copy Bregma    "
-    "h: help    q: quit"
+    "r: reset this session    R: reset ALL sessions    h: help    q: quit\n"
+    "BUTTON ONLY -- Resume: reload this page from its saved ROI set, or from the "
+    "most recently saved one when it has none yet"
 )
 
 
@@ -411,6 +444,30 @@ def scale_boxes(boxes: dict[str, Box], factor: float,
     return scaled
 
 
+def rotate_boxes(boxes: dict[str, Box], degrees: float) -> dict[str, Box]:
+    """Rotate box centres around Bregma while keeping the boxes axis-aligned.
+
+    ROI sets describe rectangular array slices and therefore cannot represent a
+    tilted rectangle. Rotation moves each rectangle's centre as a constellation;
+    its pixel width and height remain unchanged.
+    """
+    radians = math.radians(degrees)
+    cosine, sine = math.cos(radians), math.sin(radians)
+    rotated: dict[str, Box] = {}
+    for label, box in boxes.items():
+        span_r = box.row_end - box.row_start
+        span_c = box.col_end - box.col_start
+        centre_r = (box.row_start + box.row_end) / 2
+        centre_c = (box.col_start + box.col_end) / 2
+        # Rows increase downward, so this is a clockwise-positive screen rotation.
+        new_r = centre_r * cosine + centre_c * sine
+        new_c = centre_c * cosine - centre_r * sine
+        r0 = int(round(new_r - span_r / 2))
+        c0 = int(round(new_c - span_c / 2))
+        rotated[label] = Box(r0, r0 + span_r, c0, c0 + span_c)
+    return rotated
+
+
 # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------
@@ -434,9 +491,13 @@ class Session:
     base_lambda: int = 0
     base_boxes: dict[str, Box] | None = None
     seed: tuple[int, int, int, dict[str, Box]] | None = field(default=None)  # 'r' = reset
-    image: np.ndarray | None = None   # decoded lazily, when the page is opened
+    image: np.ndarray | None = None   # baked before the editing loop starts
     saved_to: str = ""                # last file written for this session
     dirty: bool = False
+    # True when this page's geometry came from, or has been written to, its OWN
+    # <key>.yaml -- i.e. boxes drawn for THIS recording rather than inherited. It is
+    # what stops page-to-page carry-over overwriting saved work (see ROIEditor._navigate).
+    has_own_set: bool = False
 
     def __post_init__(self) -> None:
         if self.base_boxes is None:
@@ -482,18 +543,43 @@ class Session:
 
 
 def _seed_layout(key: str, args: argparse.Namespace, default_boxes: dict[str, Box],
-                 bregma_row: int, bregma_col: int) -> tuple[int, int, int, dict[str, Box]]:
+                 bregma_row: int, bregma_col: int
+                 ) -> tuple[int, int, int, dict[str, Box], bool]:
     """Starting geometry for one session: existing file > --start-from > profile.
 
-    Returns ``(y_1, x_2, lambda_offset, boxes)``. A ROI set that carries a Bregma
-    overrides the manifest's -- it is the Bregma those boxes were drawn from, and
-    separating them would silently move every box. Same for its Lambda distance:
+    Returns ``(y_1, x_2, lambda_offset, boxes, has_own_set)``. A ROI set that carries
+    a Bregma overrides the manifest's -- it is the Bregma those boxes were drawn from,
+    and separating them would silently move every box. Same for its Lambda distance:
     the boxes in the file are already at that scale, so adopting the boxes without
     it would leave the editor rescaling from the wrong reference.
+
+    ``has_own_set`` is True for either of the two per-recording candidates below:
+    both hold boxes belonging to THIS recording, so the editor must not let
+    page-to-page carry-over overwrite them. ``--start-from`` seeds every page from the
+    same file and so is not "its own" -- it is a starting guess like the atlas.
+
+    Candidate order:
+
+    * ``<roi_set_dir>/<key>.yaml`` -- a set already saved for this recording in the
+      output directory. It wins because it is the work in progress: re-running the
+      editor must pick up where the last run left off.
+    * ``<roi_seed_dir>/<key>.yaml`` -- this recording's layout in a read-only reference
+      directory (e.g. the rebuilt sets). Only consulted when nothing has been saved
+      for this page yet, and never written to; saves always go to ``roi_set_dir``.
+    * ``--start-from`` -- one file seeding every page.
+    * the profile atlas.
     """
+    own_path = Path(args.roi_set_dir) / f"{key}.yaml"
+    seed_dir = getattr(args, "roi_seed_dir", None)
+    seed_path = Path(seed_dir) / f"{key}.yaml" if seed_dir else None
+
     candidates = []
     if args.load_existing:
-        candidates.append(Path(args.roi_set_dir) / f"{key}.yaml")
+        candidates.append(own_path)
+        # A seed directory is a starting layout, not an output: consulted only when the
+        # page has nothing saved of its own, so re-runs never fall back past your edits.
+        if seed_path is not None and seed_path != own_path:
+            candidates.append(seed_path)
     if args.start_from:
         candidates.append(Path(args.start_from))
 
@@ -505,9 +591,9 @@ def _seed_layout(key: str, args: argparse.Namespace, default_boxes: dict[str, Bo
             col = bregma_col if file_col is None else file_col
             lam = args.lambda_offset if file_lambda is None else file_lambda
             print(f"  {key}: seeded from {path}")
-            return row // 2, col // 2, lam, dict(atlas)
+            return row // 2, col // 2, lam, dict(atlas), path in (own_path, seed_path)
 
-    return bregma_row // 2, bregma_col // 2, args.lambda_offset, dict(default_boxes)
+    return bregma_row // 2, bregma_col // 2, args.lambda_offset, dict(default_boxes), False
 
 
 def sessions_from_manifest(args: argparse.Namespace,
@@ -535,10 +621,10 @@ def sessions_from_manifest(args: argparse.Namespace,
             raise ValueError(f"scope={args.scope!r} is not 'animal' or 'recording'.")
 
         for key, folder in entries:
-            y_1, x_2, lam, boxes = _seed_layout(key, args, default_boxes,
-                                                bregma_row, bregma_col)
+            y_1, x_2, lam, boxes, own = _seed_layout(key, args, default_boxes,
+                                                     bregma_row, bregma_col)
             sessions.append(Session(key=key, folder=folder, y_1=y_1, x_2=x_2,
-                                    boxes=boxes, lambda_offset=lam))
+                                    boxes=boxes, lambda_offset=lam, has_own_set=own))
     return sessions
 
 
@@ -566,10 +652,31 @@ def sessions_from_folders(args: argparse.Namespace,
     sessions: list[Session] = []
     for folder in args.folders:
         key = folder_key(folder)
-        y_1, x_2, lam, boxes = _seed_layout(key, args, default_boxes,
-                                            args.bregma_row, args.bregma_col)
+        y_1, x_2, lam, boxes, own = _seed_layout(key, args, default_boxes,
+                                                 args.bregma_row, args.bregma_col)
         sessions.append(Session(key=key, folder=str(folder), y_1=y_1, x_2=x_2,
-                                boxes=boxes, lambda_offset=lam))
+                                boxes=boxes, lambda_offset=lam, has_own_set=own))
+    return sessions
+
+
+def sessions_from_images(args: argparse.Namespace,
+                         default_boxes: dict[str, Box]) -> list[Session]:
+    """One session per pre-computed anatomy TIFF in image_dir; no interleaved folder needed.
+
+    Each ``<key>.tif`` must be a 128×128 float32 image already on the final analysis
+    grid (as saved by a previous bake_all_images run). The image is loaded up front
+    so bake_all_images never tries to decode a recording folder.
+    """
+    image_dir = Path(args.image_dir)
+    sessions: list[Session] = []
+    for image_path in sorted(image_dir.glob("*.tif")):
+        key = image_path.stem
+        y_1, x_2, lam, boxes, own = _seed_layout(key, args, default_boxes,
+                                                 args.bregma_row, args.bregma_col)
+        session = Session(key=key, folder=str(image_path), y_1=y_1, x_2=x_2,
+                          boxes=boxes, lambda_offset=lam, has_own_set=own)
+        session.image = np.asarray(tifffile.imread(image_path))
+        sessions.append(session)
     return sessions
 
 
@@ -625,6 +732,10 @@ class ROIEditor:
         self.selected: str | None = None
         self.clip = [1.0, 99.5]      # display percentiles
         self.message = ""
+        # Pages already shown this run -- the first visit to a page carries the
+        # CURRENT layout onto it instead of resetting to its own seed (see
+        # _navigate); a page visited again keeps whatever it was left at.
+        self._visited: set[int] = {0}
         # True while WE are moving items programmatically. Qt emits the same
         # "region changed" signal for a user drag and for a setPos() call, so
         # without this guard a Bregma move would recurse: sync boxes -> each box
@@ -648,6 +759,7 @@ class ROIEditor:
 
         self.pg = pg
         self.QtCore = QtCore
+        self.QtWidgets = QtWidgets
         self.app = pg.mkQApp("ROI editor")
 
         self.window = QtWidgets.QMainWindow()
@@ -662,6 +774,38 @@ class ROIEditor:
         self.header = QtWidgets.QLabel()
         self.header.setTextFormat(QtCore.Qt.PlainText)
         layout.addWidget(self.header)
+
+        button_bar = QtWidgets.QHBoxLayout()
+        self.btn_prev = QtWidgets.QPushButton("<< Previous")
+        self.btn_rotate_left = QtWidgets.QPushButton("Rotate left")
+        self.btn_save = QtWidgets.QPushButton("Save")
+        self.btn_resume = QtWidgets.QPushButton("Resume")
+        self.btn_rotate_right = QtWidgets.QPushButton("Rotate right")
+        self.btn_next = QtWidgets.QPushButton("Next >>")
+        for btn in (self.btn_prev, self.btn_rotate_left, self.btn_save,
+                    self.btn_resume, self.btn_rotate_right, self.btn_next):
+            btn.setFocusPolicy(QtCore.Qt.NoFocus)  # keep arrow keys reaching the window
+            button_bar.addWidget(btn)
+        layout.addLayout(button_bar)
+        self.btn_prev.clicked.connect(lambda: self._navigate(-1))
+        self.btn_next.clicked.connect(lambda: self._navigate(+1))
+        self.btn_rotate_left.clicked.connect(lambda: self._rotate_constellation(-1))
+        self.btn_rotate_right.clicked.connect(lambda: self._rotate_constellation(+1))
+        self.btn_save.clicked.connect(self._on_click_save)
+        self.btn_resume.clicked.connect(self._on_click_resume)
+
+        # Second row: the two batch gestures. Kept apart from the per-page row above
+        # because they reach beyond the page being looked at -- one pulls geometry in
+        # from another page, the other writes several files at once.
+        batch_bar = QtWidgets.QHBoxLayout()
+        self.btn_copy_prev = QtWidgets.QPushButton("Copy previous page's ROIs")
+        self.btn_save_modified = QtWidgets.QPushButton("Save modified")
+        for btn in (self.btn_copy_prev, self.btn_save_modified):
+            btn.setFocusPolicy(QtCore.Qt.NoFocus)
+            batch_bar.addWidget(btn)
+        layout.addLayout(batch_bar)
+        self.btn_copy_prev.clicked.connect(self._on_click_copy_previous)
+        self.btn_save_modified.clicked.connect(self._on_click_save_modified)
 
         self.graphics = pg.GraphicsLayoutWidget()
         # NoFocus: let arrow keys reach the window's keyPressEvent instead of being
@@ -736,13 +880,56 @@ class ROIEditor:
         return self.sessions[self.index]
 
     def _ensure_image(self, session: Session) -> None:
-        """Decode the preview for a page the first time it is opened."""
+        """Decode one preview, retaining a guard for direct/test callers."""
         if session.image is None:
             # flush: over a network share this is the slow step, and an unflushed
             # line makes the editor look like it is doing nothing.
             print(f"Loading preview: {session.folder}", flush=True)
             session.image = preview_image(session.folder, self.args.channel_order,
                                           self.args.preview_frames)
+
+    def bake_all_images(self) -> None:
+        """Decode and save every preview before entering the editing loop.
+
+        Baking up front keeps page changes responsive. Existing TIFFs are loaded
+        directly; only missing previews are decoded from their recordings and
+        written. The final-grid images use float32: they are alignment aids, not
+        analysis inputs, so retaining the full source resolution is wasteful.
+        """
+        total = len(self.sessions)
+        image_dir = Path(self.args.roi_set_dir) / "alignment_images"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        dlg = self.QtWidgets.QProgressDialog(
+            "Preparing previews...", None, 0, total, self.window)
+        dlg.setWindowTitle("ROI editor")
+        dlg.setMinimumWidth(420)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.show()
+        self.app.processEvents()
+        try:
+            for number, session in enumerate(self.sessions, start=1):
+                image_path = image_dir / f"{session.key}.tif"
+                if image_path.is_file():
+                    dlg.setLabelText(
+                        f"Loading preview {number}/{total}: {session.key}")
+                    self.app.processEvents()
+                    session.image = np.asarray(tifffile.imread(image_path))
+                    print(f"Loaded alignment preview: {image_path}", flush=True)
+                else:
+                    dlg.setLabelText(
+                        f"Preparing preview {number}/{total}: {session.key}")
+                    self.app.processEvents()
+                    # A session may already carry an in-memory preview (for example
+                    # in tests or image-directory mode). Save it when the cache is
+                    # missing; decode only when no preview is available yet.
+                    self._ensure_image(session)
+                    tifffile.imwrite(image_path, session.image.astype(np.float32))
+                    print(f"Saved alignment preview: {image_path}", flush=True)
+                dlg.setValue(number)
+                self.app.processEvents()
+        finally:
+            dlg.close()
 
     def _out_of_frame(self, session: Session) -> list[str]:
         """Labels whose box does not fit the frame (drawn red, save refused).
@@ -763,6 +950,86 @@ class ROIEditor:
         self.message = text
         print(text)
         self._refresh_status()
+
+    def _popup(self, text: str, title: str = "ROI editor", warn: bool = False) -> None:
+        """A modal feedback box -- for button actions, where the status line alone
+        is easy to miss (unlike keyboard shortcuts, a button click has no other
+        confirmation that anything happened)."""
+        box = self.QtWidgets.QMessageBox.warning if warn else self.QtWidgets.QMessageBox.information
+        box(self.window, title, text)
+
+    def _navigate(self, delta: int) -> None:
+        """Switch page by +-1 (wraps around), shared by the n/p keys and the buttons.
+
+        A page not yet visited this run is seeded from the CURRENT layout rather
+        than its own starting atlas/file -- paging through many similar sessions
+        should carry an adjustment forward, not throw it away on every 'next'. A
+        page visited before keeps whatever it was left at (edited or not); 'r'
+        still resets a page to its own true original layout regardless.
+
+        The one exception is a page that already has its OWN ``<key>.yaml``
+        (``has_own_set``): those boxes were drawn for this recording and are better
+        than any neighbour's, so arriving on the page must not overwrite them. Carry
+        the neighbour's layout over deliberately with 'c' if that is what you want.
+        """
+        source = self.session
+        self.index = (self.index + delta) % len(self.sessions)
+        target = self.session
+        note = ""
+        if self.index not in self._visited:
+            self._visited.add(self.index)
+            if target.has_own_set:
+                note = (f"{target.key}: kept its own saved ROI set "
+                        f"(not carried over from {source.key}); press 'c' to copy "
+                        f"the previous page's layout over it.")
+            else:
+                target.boxes = dict(source.boxes)
+                target.lambda_offset = source.lambda_offset
+                target.rebase()
+                target.dirty = True
+        self.selected, self.message = None, ""
+        self._rebuild_scene()
+        if note:
+            self.say(note)
+
+    def _copy_from_previous(self) -> bool:
+        """Put the PREVIOUS page's whole layout on this page.
+
+        The manual counterpart of what :meth:`_navigate` does automatically the
+        first time a page is opened: consecutive recordings are usually the same
+        animal under the same camera, so the layout just adjusted next door is a
+        far better starting point than whatever this page was left at. Boxes, the
+        Lambda distance AND Bregma all come across -- the point is for the two
+        pages to look identical, and a copy that left Bregma behind would silently
+        translate every box it just brought in.
+
+        "Previous" is the page ``p`` / ``<< Previous`` goes to, wrap-around
+        included, so on the first page it copies from the last one.
+        """
+        if len(self.sessions) < 2:
+            self.say("Only one session loaded -- there is no previous page to copy from.")
+            return False
+        source = self.sessions[(self.index - 1) % len(self.sessions)]
+        target = self.session
+        target.boxes = dict(source.boxes)
+        target.lambda_offset = source.lambda_offset
+        target.y_1, target.x_2 = source.y_1, source.x_2
+        # The copied boxes are the ones drawn at the copied Lambda distance, so they
+        # become this page's reference too (see Session.rebase).
+        target.rebase()
+        target.dirty = True
+        # This page was marked visited when it was opened; nothing to do there.
+        self.selected = None
+        self._rebuild_scene()
+        self.say(f"{target.key}: layout copied from {source.key} "
+                 f"({len(target.boxes)} boxes, Bregma row={target.bregma_row} "
+                 f"col={target.bregma_col}, Lambda +{target.lambda_offset} px)")
+        return True
+
+    def _on_click_copy_previous(self) -> None:
+        ok = self._copy_from_previous()
+        self._popup(self.message, title="Copied from previous page" if ok
+                    else "Nothing to copy", warn=not ok)
 
     # -- building / syncing the scene ---------------------------------------
     def _make_roi(self, label: str, box: Box):
@@ -882,6 +1149,11 @@ class ROIEditor:
     def _refresh_header(self) -> None:
         session = self.session
         rows, cols = session.image.shape
+        # The button carries the count so the size of the pending batch is visible
+        # without paging through every session to look for "*unsaved*" headers.
+        n_dirty = sum(s.dirty for s in self.sessions)
+        self.btn_save_modified.setText(f"Save modified ({n_dirty})")
+        self.btn_save_modified.setEnabled(n_dirty > 0)
         self.header.setText(
             f"[{self.index + 1}/{len(self.sessions)}] {session.key}"
             f"{'  *unsaved*' if session.dirty else ''}\n"
@@ -1006,6 +1278,43 @@ class ROIEditor:
         session.dirty = True
         self._sync_boxes()
 
+    def _rotate_constellation(self, degrees: float) -> None:
+        """Rotate every ROI centre around Bregma, preserving box dimensions."""
+        session = self.session
+        session.boxes = rotate_boxes(session.boxes, degrees)
+        session.rebase()
+        session.dirty = True
+        self.say(f"Constellation rotated {degrees:+g} degrees around Bregma "
+                 f"({len(session.boxes)} axis-aligned boxes moved)")
+        self._sync_boxes()
+
+    def _flip_constellation(self, horizontal: bool) -> None:
+        """Mirror Bregma and all boxes about the image centre on one axis."""
+        session = self.session
+        rows, cols = session.image.shape
+        if horizontal:
+            # Reflect across the y-axis: negate and swap col offsets.
+            session.x_2 = _clamp(cols - (session.x_2 - 1), 1, cols)
+            session.boxes = {
+                label: Box(row_start=box.row_start, row_end=box.row_end,
+                           col_start=-box.col_end, col_end=-box.col_start)
+                for label, box in session.boxes.items()
+            }
+            msg = f"flipped left-right (Bregma col={session.bregma_col})"
+        else:
+            # Reflect across the x-axis: negate and swap row offsets.
+            session.y_1 = _clamp(rows - (session.y_1 - 1), 1, rows)
+            session.boxes = {
+                label: Box(row_start=-box.row_end, row_end=-box.row_start,
+                           col_start=box.col_start, col_end=box.col_end)
+                for label, box in session.boxes.items()
+            }
+            msg = f"flipped up-down (Bregma row={session.bregma_row})"
+        session.rebase()
+        session.dirty = True
+        self.say(f"Constellation {msg}, {len(session.boxes)} boxes mirrored")
+        self._sync_boxes()
+
     def _set_lambda(self, lambda_offset: int) -> None:
         """Set the Bregma -> Lambda distance and rescale the layout about Bregma.
 
@@ -1055,8 +1364,13 @@ class ROIEditor:
         session.dirty = True
 
     # -- saving --------------------------------------------------------------
-    def _save(self, session: Session, path: Path, name: str) -> bool:
-        """Write one ROI set. Refuses (returns False) if a box is off the frame."""
+    def _save(self, session: Session, path: Path, name: str,
+              own_set: bool = True) -> bool:
+        """Write one ROI set. Refuses (returns False) if a box is off the frame.
+
+        ``own_set=False`` for the shared file, which is one layout for every page and
+        so does not make any single page's geometry "its own" (see Session.has_own_set).
+        """
         self._ensure_image(session)
         bad = self._out_of_frame(session)
         if bad:
@@ -1075,29 +1389,165 @@ class ROIEditor:
                                lambda_offset=session.lambda_offset,
                                downsample=get_profile(self.profile_name).downsample)
         session.saved_to = str(written)
-        session.dirty = False
+        if own_set:
+            # Only a file under this page's own key clears the unsaved state: the
+            # shared set is a different file, and a page whose geometry went only
+            # there still has nothing saved under its own name.
+            session.dirty = False
+            # It now holds geometry drawn for THIS recording, so a later first visit
+            # must not carry a neighbour's over it. This matters for 'S' / "Save
+            # modified", which write pages that have not been opened yet.
+            session.has_own_set = True
+        # The header's "*unsaved*" marker and the modified-count button both read
+        # `dirty`, so they have to be redrawn here -- a save is the one edit-like
+        # action that does not go through _restyle.
+        self._refresh_header()
         self.say(f"Saved {name} -> {written}")
         return True
 
-    def _save_current(self) -> None:
+    def _save_current(self) -> bool:
         session = self.session
-        self._save(session, Path(self.args.roi_set_dir) / f"{session.key}.yaml", session.key)
+        return self._save(session, Path(self.args.roi_set_dir) / f"{session.key}.yaml", session.key)
+
+    def _on_click_save(self) -> None:
+        """Save button: same as the 's' key, plus a popup so the save is unmissable."""
+        ok = self._save_current()
+        self._popup(self.message, title="Saved" if ok else "Save failed", warn=not ok)
+
+    def _latest_saved_set(self) -> Path | None:
+        """The most recently written ROI set in ``roi_set_dir``, whichever page it is for.
+
+        "Most recent" is by modification time rather than by page order: it is the
+        geometry last committed to disk, which in a long run is the layout that has
+        had the most work put into it. Only used as Resume's fallback.
+        """
+        directory = Path(self.args.roi_set_dir)
+        if not directory.is_dir():
+            return None
+        candidates = [p for p in directory.glob("*.yaml") if p.is_file()]
+        return max(candidates, key=lambda p: p.stat().st_mtime) if candidates else None
+
+    def _resume_session(self) -> bool:
+        """Reload the current page from a saved ROI set. True when one was found.
+
+        Distinct from 'r' (reset): 'r' goes back to how the page STARTED this run
+        (the profile atlas, or whatever it was seeded from); this goes back to what
+        was actually written to disk, discarding only the edits made since -- the
+        "undo my mistakes, not my whole session" button.
+
+        Two sources, in order:
+
+        * ``<roi_set_dir>/<key>.yaml`` -- this page's own saved set. The page then
+          matches its file exactly, so it is no longer unsaved and 'r' is re-pointed
+          at this layout.
+        * ``<roi_seed_dir>/<key>.yaml`` -- this page's layout in the read-only
+          reference directory, when one is configured. Still this recording's own
+          geometry, so it counts as "own": it is exactly the "discard my edits and go
+          back to the reference" button.
+        * failing that, the most recently saved set in ``roi_set_dir`` (see
+          :meth:`_latest_saved_set`). With hundreds of pages and a handful saved, the
+          per-page file usually does not exist yet, and the last layout drawn is a far
+          better starting point than the atlas. That geometry belongs to a DIFFERENT
+          page, so nothing has been written under this key: the page stays *unsaved*
+          (and stays in the "Save modified" batch), and 'r' still returns to the
+          layout this page opened with.
+        """
+        session = self.session
+        own_path = Path(self.args.roi_set_dir) / f"{session.key}.yaml"
+        seed_dir = getattr(self.args, "roi_seed_dir", None)
+        seed_path = Path(seed_dir) / f"{session.key}.yaml" if seed_dir else None
+
+        path = own_path if own_path.is_file() else None
+        if path is None and seed_path is not None and seed_path.is_file():
+            path = seed_path
+        own = path is not None
+        if path is None:
+            path = self._latest_saved_set()
+        if path is None:
+            self.say(f"Nothing to resume from: {session.key} has no saved ROI set, and "
+                     f"{self.args.roi_set_dir} does not hold a single one yet.")
+            return False
+
+        atlas, file_row, file_col = load_roi_set(path)
+        lam = load_lambda_offset(path)
+        if file_row is not None:
+            session.y_1, session.x_2 = file_row // 2, file_col // 2
+        session.boxes = dict(atlas)
+        if lam is not None:
+            session.lambda_offset = lam
+        session.rebase()
+
+        if own:
+            session.seed = (session.y_1, session.x_2, session.lambda_offset,
+                            dict(session.boxes))
+            session.dirty = False
+            session.has_own_set = True
+            self.say(f"{session.key}: resumed from {path}")
+        else:
+            session.dirty = True
+            saved_at = datetime.fromtimestamp(path.stat().st_mtime).strftime("%d %b %H:%M")
+            self.say(f"{session.key} has no ROI set of its own -- resumed from the most "
+                     f"recently saved one, {path.name} (saved {saved_at}). Check it "
+                     f"against THIS anatomy, then press 's' to save it as "
+                     f"{session.key}.yaml.")
+        self.selected = None
+        self._rebuild_scene()
+        return True
+
+    def _on_click_resume(self) -> None:
+        ok = self._resume_session()
+        self._popup(self.message, title="Resume" if ok else "Nothing to resume",
+                    warn=not ok)
+
+    def _save_many(self, sessions: list[Session], what: str) -> list[str]:
+        """Write one ROI set per session; return the keys that were REFUSED.
+
+        Every preview was baked at startup, so each save can validate against its
+        real frame without doing I/O here. A refusal (a box off the frame) only
+        skips that one session -- the rest are still written, and the keys come back
+        so the summary can name them instead of leaving the count to be puzzled over.
+        """
+        results = [
+            (s.key, self._save(s, Path(self.args.roi_set_dir) / f"{s.key}.yaml", s.key))
+            for s in sessions
+        ]
+        refused = [key for key, ok in results if not ok]
+        note = (f"  --  REFUSED (boxes off frame): {refused}" if refused else "")
+        self.say(f"Saved {len(results) - len(refused)}/{len(results)} {what} ROI sets "
+                 f"to {self.args.roi_set_dir}{note}")
+        return refused
 
     def _save_all(self) -> None:
-        # Loads the preview of any page not yet opened: a save is validated against
-        # the real frame, so every session must have one.
-        saved = sum(
-            self._save(s, Path(self.args.roi_set_dir) / f"{s.key}.yaml", s.key)
-            for s in self.sessions
-        )
-        self.say(f"Saved {saved}/{len(self.sessions)} session ROI sets to "
-                 f"{self.args.roi_set_dir}")
+        self._save_many(self.sessions, "session")
+
+    def _save_modified(self) -> list[str]:
+        """Save every page with unsaved changes, and only those.
+
+        The batch counterpart of 's': after paging through a run and adjusting some
+        of the sessions, this writes exactly the ones that were touched. Unlike 'S'
+        it does not rewrite files for pages that were only looked at, so their
+        on-disk ``source`` line and timestamps keep saying when they were really
+        drawn. ``dirty`` is set by every edit and cleared by a successful save, so
+        it is the same "*unsaved*" marker the header shows.
+        """
+        pending = [s for s in self.sessions if s.dirty]
+        if not pending:
+            self.say("Nothing to save -- no session has unsaved changes.")
+            return []
+        return self._save_many(pending, "modified")
+
+    def _on_click_save_modified(self) -> None:
+        pending = any(s.dirty for s in self.sessions)
+        refused = self._save_modified()
+        self._popup(self.message,
+                    title="Saved modified" if pending and not refused else "Save modified",
+                    warn=bool(refused))
 
     def _write_shared(self) -> None:
         """One file for every session -- the 'same ROIs everywhere' option."""
         session = self.session
         path = Path(self.args.roi_set_dir) / self.args.shared_name
-        self._save(session, path, Path(self.args.shared_name).stem)
+        self._save(session, path, Path(self.args.shared_name).stem, own_set=False)
 
     def _apply_to_all(self, with_bregma: bool) -> None:
         session = self.session
@@ -1156,18 +1606,37 @@ class ROIEditor:
             self._set_lambda(session.lambda_offset + sign * step)
             return
 
+        if key in (Qt.Key_Z, Qt.Key_X):
+            step = self.NUDGE_BIG if shift else 1
+            self._rotate_constellation((-step if key == Qt.Key_Z else step))
+            return
+
+        if key == Qt.Key_F:
+            self._flip_constellation(horizontal=True)
+            return
+
+        if key == Qt.Key_V:
+            self._flip_constellation(horizontal=False)
+            return
+
         if key == Qt.Key_N:
-            self.index = (self.index + 1) % len(self.sessions)
-            self.selected, self.message = None, ""
-            rebuild = True
+            self._navigate(+1)
+            return
         elif key == Qt.Key_P:
-            self.index = (self.index - 1) % len(self.sessions)
-            self.selected, self.message = None, ""
-            rebuild = True
+            self._navigate(-1)
+            return
+        elif key == Qt.Key_C:
+            self._copy_from_previous()
+            return
         elif key == Qt.Key_S:
             # Qt reports the letter and the modifier separately; matplotlib used to
             # hand over a pre-cased "s" / "S".
-            self._save_all() if shift else self._save_current()
+            if ctrl:
+                self._save_modified()
+            elif shift:
+                self._save_all()
+            else:
+                self._save_current()
         elif key == Qt.Key_W:
             self._write_shared()
         elif key == Qt.Key_A:
@@ -1178,14 +1647,25 @@ class ROIEditor:
             # (they rebased it), so this only takes out the stretch.
             self._set_lambda(session.base_lambda)
         elif key == Qt.Key_R:
-            y_1, x_2, lam, boxes = session.seed
-            session.y_1, session.x_2, session.boxes = y_1, x_2, dict(boxes)
-            session.lambda_offset = lam
-            session.rebase()          # the starting layout is the reference again
-            session.dirty = False
-            self.selected = None
-            self.say(f"{session.key}: reset to the starting layout.")
-            rebuild = True
+            if shift:
+                for s in self.sessions:
+                    y_1, x_2, lam, boxes = s.seed
+                    s.y_1, s.x_2, s.boxes = y_1, x_2, dict(boxes)
+                    s.lambda_offset = lam
+                    s.rebase()
+                    s.dirty = False
+                self.selected = None
+                self.say(f"All {len(self.sessions)} sessions reset to starting layouts.")
+                rebuild = True
+            else:
+                y_1, x_2, lam, boxes = session.seed
+                session.y_1, session.x_2, session.boxes = y_1, x_2, dict(boxes)
+                session.lambda_offset = lam
+                session.rebase()          # the starting layout is the reference again
+                session.dirty = False
+                self.selected = None
+                self.say(f"{session.key}: reset to the starting layout.")
+                rebuild = True
         elif key in (Qt.Key_Plus, Qt.Key_Equal):
             self._resize_box(+1)
         elif key == Qt.Key_Minus:
@@ -1210,6 +1690,7 @@ class ROIEditor:
             self._rebuild_scene()
 
     def run(self) -> None:
+        self.bake_all_images()
         self._rebuild_scene()
         self.window.show()
         self.app.exec()
@@ -1230,7 +1711,11 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     p.add_argument("--folders", nargs="*", default=defaults["folders"],
                    help="Interleaved folders to edit (ignores --manifest when given).")
     p.add_argument("--scope", choices=("animal", "recording"), default=defaults["scope"])
-    p.add_argument("--roi-set-dir", default=defaults["roi_set_dir"])
+    p.add_argument("--roi-set-dir", default=defaults["roi_set_dir"],
+                   help="Where ROI sets are written.")
+    p.add_argument("--roi-seed-dir", default=defaults["roi_seed_dir"],
+                   help="Read-only directory of starting layouts; saves still go to "
+                        "--roi-set-dir.")
     p.add_argument("--shared-name", default=defaults["shared_name"])
     p.add_argument("--start-from", default=defaults["start_from"],
                    help="Seed every session from this ROI set file.")
@@ -1246,6 +1731,9 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     p.add_argument("--no-load-existing", dest="load_existing", action="store_false",
                    default=defaults["load_existing"],
                    help="Ignore ROI sets already in --roi-set-dir.")
+    p.add_argument("--image-dir", default=defaults.get("image_dir"), metavar="DIR",
+                   help="Directory of pre-computed 128x128 anatomy TIFFs (<key>.tif). "
+                        "Bypasses interleaved folder decoding; overrides --manifest/--folders.")
     ns = p.parse_args()
     ns.profile = defaults["profile"]
     ns.channel_order = defaults["channel_order"]
@@ -1272,9 +1760,11 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         lambda_offset=config["lambda_offset"],
         lambda_scales_box_size=bool(config["lambda_scales_box_size"]),
         roi_set_dir=config["roi_set_dir"],
+        roi_seed_dir=config["roi_seed_dir"],
         shared_name=config["shared_name"],
         load_existing=bool(config["load_existing"]),
         start_from=config["start_from"],
+        image_dir=config.get("image_dir"),
     )
 
 
@@ -1293,10 +1783,15 @@ def main() -> None:
         )
 
     print(f"Profile   : {profile.name} ({profile.n_rois} ROIs: {profile.labels})")
-    print(f"ROI sets  : {args.roi_set_dir}")
+    print(f"ROI sets  : {args.roi_set_dir}  (saves go here)")
+    if getattr(args, "roi_seed_dir", None):
+        print(f"Seeded from: {args.roi_seed_dir}  (read-only reference layouts)")
     print(f"Lambda    : {args.lambda_offset} px below Bregma (scale reference; "
           f"box sizes {'scale too' if args.lambda_scales_box_size else 'stay fixed'})")
-    if args.manifest:
+    if getattr(args, "image_dir", None):
+        print(f"Images    : {args.image_dir} (pre-computed anatomy previews)")
+        sessions = sessions_from_images(args, default_boxes)
+    elif args.manifest:
         print(f"Manifest  : {args.manifest} (scope={args.scope})")
         sessions = sessions_from_manifest(args, default_boxes)
     else:
@@ -1305,10 +1800,10 @@ def main() -> None:
         raise ValueError("No sessions to edit: give a manifest or a non-empty folders list.")
     print(f"Sessions  : {len(sessions)} -> {[s.key for s in sessions]}")
     print(HELP)
-    print("\nOpening the editor window (it may open BEHIND this terminal). The first "
-          "preview is\ndecoded now -- over a network share that takes a few seconds. "
-          "Nothing is analysed\nhere: draw the ROIs, press 's' to save, then run the "
-          "pipeline with --roi-set.\n", flush=True)
+    print("\nOpening the editor window (it may open BEHIND this terminal). All alignment "
+          "previews are\ndecoded and saved under <roi_set_dir>/alignment_images "
+          "before editing starts.\nNothing is analysed here: draw the ROIs, press "
+          "'s' to save, then run the pipeline\nwith --roi-set.\n", flush=True)
 
     ROIEditor(sessions, args, profile.name).run()
     print("Editor closed.")

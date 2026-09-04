@@ -100,6 +100,7 @@ def stream_trial_roi(
     gsr: GSRConfig | None = None,
     mask_threshold: float = 0.0,
     expected_grid: tuple[int, int] | None = None,
+    pixel_dump=None,
 ) -> np.ndarray:
     """Stream one ``(gcamp, emo)`` trial from disk to its ``[time, n_rois]`` trace.
 
@@ -133,9 +134,28 @@ def stream_trial_roi(
     expected_grid:
         The final ``(rows, cols)`` the ROI atlas was drawn for; see
         :func:`wfci.roi.box_slices_for`. None skips the check.
+    pixel_dump:
+        Optional :class:`wfci.dump.PixelDump` (or anything with the same
+        ``baselines``/``frame``/``close`` methods). When given, every frame's raw
+        and corrected pixels are written to disk from *inside* pass 2 -- no extra
+        read, no extra resident array, so the two-pass and one-frame invariants
+        (I10, I2) are unaffected. None (the default) is the pixel-free path.
     """
     gcamp_src = _as_frame_source(gcamp)
     emo_src = _as_frame_source(emo)
+    if pixel_dump is not None and gsr is not None:
+        # A post-GSR per-pixel stack does not exist in this path by construction:
+        # _stream_pass2_gsr accumulates only the sufficient statistics (a, b,
+        # g_vec) precisely so it never has to hold one, and materialising it would
+        # need a third pass over the file -- breaking invariant I10. Dumping the
+        # PRE-GSR pixels under a name that implies otherwise would be worse than
+        # refusing, so refuse.
+        raise ValueError(
+            "pixel_dump is not supported together with GSR: the streaming GSR "
+            "path never materialises a post-GSR per-pixel frame (it accumulates "
+            "only the OLS statistics), and producing one would require a third "
+            "pass over the data. Dump without GSR, or use the in-memory path."
+        )
     invalid = None if mask is None else ~valid_from_mask(mask, mask_threshold)
     # Frame count after trimming; both channels are assumed equal length, so we
     # take the shorter one to stay in lockstep.
@@ -182,18 +202,28 @@ def stream_trial_roi(
     temp_roi = np.empty((n_time, len(names)), dtype=np.float64)
     g_stream = _half_res_frames(gcamp_src, trim, downsample)
     e_stream = _half_res_frames(emo_src, trim, downsample)
-    for idx, (g_half, e_half) in enumerate(zip(g_stream, e_stream)):
-        if idx >= n_time:
-            break
-        # DeltaF/F (%) for this frame, exactly as hemodynamic_correction does it.
-        dff_half = ((g_half / mean_f) / (e_half / mean_r) - 1.0) * 100.0
-        # Second 0.5x box downsample (per-frame == whole-stack slice).
-        dff_q = imresize_box(dff_half, downsample)
-        if invalid is not None:
-            _check_mask_shape(invalid, dff_q)
-            dff_q = np.where(invalid, np.nan, dff_q)
-        for j, (rs, cs) in enumerate(box_slices):
-            temp_roi[idx, j] = np.nanmean(dff_q[rs, cs])
+    if pixel_dump is not None:
+        pixel_dump.baselines(mean_f, mean_r)
+    try:
+        for idx, (g_half, e_half) in enumerate(zip(g_stream, e_stream)):
+            if idx >= n_time:
+                break
+            # DeltaF/F (%) for this frame, exactly as hemodynamic_correction does it.
+            dff_half = ((g_half / mean_f) / (e_half / mean_r) - 1.0) * 100.0
+            # Second 0.5x box downsample (per-frame == whole-stack slice).
+            dff_q = imresize_box(dff_half, downsample)
+            if invalid is not None:
+                _check_mask_shape(invalid, dff_q)
+                dff_q = np.where(invalid, np.nan, dff_q)
+            if pixel_dump is not None:
+                # Written from the loop's own locals, after masking, so the dump
+                # holds exactly the pixels the ROI means below are taken from.
+                pixel_dump.frame(idx, g_half, e_half, dff_q)
+            for j, (rs, cs) in enumerate(box_slices):
+                temp_roi[idx, j] = np.nanmean(dff_q[rs, cs])
+    finally:
+        if pixel_dump is not None:
+            pixel_dump.close()
     return temp_roi
 
 
@@ -382,6 +412,7 @@ def run_streaming(
     gsr: GSRConfig | None = None,
     mask_threshold: float = 0.0,
     expected_grid: tuple[int, int] | None = None,
+    pixel_dump_factory=None,
 ) -> StreamingResult:
     """Streaming pipeline over a list of ``(gcamp, emo)`` trials.
 
@@ -393,14 +424,20 @@ def run_streaming(
     ``mask`` / ``gsr`` mirror :func:`wfci.pipeline.run_pipeline`'s optional stages;
     the mask must already be at the final resolution (see
     :func:`wfci.pipeline.prepare_mask`).
+
+    ``pixel_dump_factory`` is an optional ``(trial_index) -> PixelDump | None``.
+    It is a factory rather than a single sink because each trial needs its own
+    files; returning None for a trial dumps nothing for it. See
+    :mod:`wfci.dump`.
     """
     traces = [
         stream_trial_roi(
             g, e, cfg, baseline_slice, trim, downsample,
             mask=mask, gsr=gsr, mask_threshold=mask_threshold,
             expected_grid=expected_grid,
+            pixel_dump=None if pixel_dump_factory is None else pixel_dump_factory(i),
         )
-        for g, e in trial_sources
+        for i, (g, e) in enumerate(trial_sources)
     ]
     # [time, n_rois, trial]
     temp_roi = np.stack(traces, axis=-1)
@@ -413,11 +450,13 @@ def run_streaming_profile(
     cfg: ROIConfig,
     profile: Profile,
     mask: np.ndarray | None = None,
+    pixel_dump_factory=None,
 ) -> StreamingResult:
     """Streaming counterpart of :func:`wfci.pipeline.run_profile`.
 
     Same profile, same numbers, constant memory -- the storage x memory x profile
-    axes stay independent, so any profile runs either way.
+    axes stay independent, so any profile runs either way. ``pixel_dump_factory``
+    is passed straight through to :func:`run_streaming`.
     """
     from .pipeline import prepare_mask
 
@@ -432,6 +471,7 @@ def run_streaming_profile(
         mask=prepare_mask(mask, profile),
         gsr=profile.gsr,
         expected_grid=profile.atlas.grid,
+        pixel_dump_factory=pixel_dump_factory,
     )
 
 

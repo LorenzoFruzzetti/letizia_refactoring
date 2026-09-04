@@ -76,7 +76,7 @@ from wfci import (
 
 # The ROI-set file format (boxes + the Bregma they were drawn from) is owned by
 # the editor utility; importing it here is inert (its run is __main__-guarded).
-from roi_editor import load_roi_set
+from roi_editor import folder_key, load_roi_set
 
 # ---------------------------------------------------------------------------
 # Edit this section to run without CLI flags.
@@ -118,6 +118,11 @@ RUN_CONFIG: dict[str, Any] = {
     # chain are unchanged -- just 22 ROIs instead of 4, giving a 22x22 R.
     # Re-draw it per animal with roi_editor.py and point this at that file.
     "roi_set": r"roi_sets\cortex22_roi_set.yaml",
+    # Folder of per-recording ROI sets written by batch_roi_select.py.  When set,
+    # each recording looks for <roi_set_dir>/<key>.yaml (where key = last 3 path
+    # components, e.g. 260611_R1_t1) and uses that file if it exists, falling back
+    # to the shared roi_set above.  None = use one roi_set for every recording.
+    "roi_set_dir": None,
     # Debug smoke test vs the real streaming run.
     "debug": True,
     # Debug only: frames PER CHANNEL to load (reads the folder's first 2*N images,
@@ -143,6 +148,11 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     p.add_argument("--output-dir", default=defaults["output_dir"])
     p.add_argument("--roi-set", default=defaults["roi_set"],
                    metavar="PATH", help="ROI set YAML from roi_editor.py (boxes + Bregma).")
+    p.add_argument("--roi-set-dir", default=defaults["roi_set_dir"],
+                   metavar="DIR",
+                   help="Folder of per-recording ROI sets from batch_roi_select.py; "
+                        "each recording looks for <dir>/<key>.yaml before falling back "
+                        "to --roi-set.")
     # --full and --debug are mutually exclusive ways to pick the mode; without
     # either, the RUN_CONFIG["debug"] value stands.
     mode = p.add_mutually_exclusive_group()
@@ -171,10 +181,25 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         bregma_row=config["bregma_row"],
         bregma_col=config["bregma_col"],
         roi_set=config["roi_set"],
+        roi_set_dir=config["roi_set_dir"],
         debug=bool(config["debug"]),
         debug_frames=config["debug_max_frames"],
         output_dir=config["output_dir"],
     )
+
+
+def resolve_roi_set_for(folder: Path, args) -> str | None:
+    """Return the ROI set path for one recording folder, or None.
+
+    Priority: <roi_set_dir>/<key>.yaml (per-recording) > args.roi_set (shared).
+    Falls back to None when neither is configured or the per-recording file does
+    not exist yet (run batch_roi_select.py first to create it).
+    """
+    if args.roi_set_dir:
+        candidate = Path(args.roi_set_dir) / f"{folder_key(folder)}.yaml"
+        if candidate.is_file():
+            return str(candidate)
+    return args.roi_set or None
 
 
 def apply_roi_set(profile, bregma_row: int, bregma_col: int, roi_set: str | None):
@@ -190,6 +215,7 @@ def apply_roi_set(profile, bregma_row: int, bregma_col: int, roi_set: str | None
     """
     if not roi_set:
         return profile, bregma_row, bregma_col
+
     atlas, file_row, file_col = load_roi_set(roi_set)
     profile = replace(profile, atlas=atlas)
     if file_row is not None:
@@ -308,7 +334,8 @@ def run_one_recording(folder: Path, cfg, profile, args):
     return run_streaming_profile(sources, cfg, profile)
 
 
-def save_outputs(result, out_dir: str, cfg, profile, args, bregma_row, bregma_col) -> str:
+def save_outputs(result, out_dir: str, cfg, profile, args, bregma_row, bregma_col,
+                 *, roi_set_path: str | None = None) -> str:
     """Write this recording's figures and .npz into ``out_dir``; return the npz path."""
     os.makedirs(out_dir, exist_ok=True)
     labels = profile.labels
@@ -335,7 +362,7 @@ def save_outputs(result, out_dir: str, cfg, profile, args, bregma_row, bregma_co
         profile=np.array(profile.name),
         bregma=np.array([bregma_row, bregma_col]),
         # Which geometry produced these numbers ("" = the profile's own atlas).
-        roi_set=np.array(args.roi_set or ""),
+        roi_set=np.array(roi_set_path or args.roi_set or ""),
     )
     if getattr(result, "dff_stack", None) is not None:
         arrays["dff_stack"] = result.dff_stack
@@ -354,15 +381,7 @@ def _mean_offdiag(R_mean) -> float:
 def main() -> None:
     args = build_runtime_args()
 
-    profile = get_profile(args.profile)
-    # An optional ROI set overrides both the atlas and the Bregma (see apply_roi_set).
-    profile, bregma_row, bregma_col = apply_roi_set(
-        profile, args.bregma_row, args.bregma_col, args.roi_set
-    )
-    # The profile supplies the ROI atlas; cfg carries only the per-animal Bregma.
-    # It is built once and reused: every recording found below "folder" is analysed
-    # with the SAME geometry (see the module docstring's caveat about animals).
-    cfg = ROIConfig.from_bregma(bregma_row, bregma_col, boxes=dict(profile.atlas))
+    base_profile = get_profile(args.profile)
 
     root = Path(args.folder)
     recordings = discover_recordings(root, args.pattern)
@@ -373,8 +392,9 @@ def main() -> None:
 
     print(f"Input  : {root}")
     print(f"Found  : {len(recordings)} recording(s), analysed separately")
-    print(f"Bregma : row={bregma_row}, col={bregma_col}  "
-          f"(downsampled y_1={cfg.y_1}, x_2={cfg.x_2})")
+    if args.roi_set_dir:
+        print(f"ROI sets: {args.roi_set_dir}/<key>.yaml  (per-recording; "
+              f"run batch_roi_select.py to create them)")
 
     summary: list[tuple[str, float, str]] = []
     for i, folder in enumerate(recordings, start=1):
@@ -385,13 +405,25 @@ def main() -> None:
         label = "/".join(rel.parts) or root.name
         out_dir = os.path.join(args.output_dir, *rel.parts)
 
+        # Resolve per-recording ROI set (from roi_set_dir) or fall back to the
+        # shared roi_set.  apply_roi_set with None is a no-op, so the profile's
+        # own atlas and the config's Bregma are used when nothing is configured.
+        roi_set_path = resolve_roi_set_for(folder, args)
+        profile, bregma_row, bregma_col = apply_roi_set(
+            base_profile, args.bregma_row, args.bregma_col, roi_set_path
+        )
+        cfg = ROIConfig.from_bregma(bregma_row, bregma_col, boxes=dict(profile.atlas))
+
         print(f"\n[{i}/{len(recordings)}] {label}  ({folder})")
+        print(f"  Bregma : row={bregma_row}, col={bregma_col}  "
+              f"(downsampled y_1={cfg.y_1}, x_2={cfg.x_2})")
         result = run_one_recording(folder, cfg, profile, args)
 
         print(f"  R_mean ({profile.n_rois}x{profile.n_rois}), ROI order {profile.labels}:")
         print(np.array2string(result.R_mean, precision=4, suppress_small=True))
 
-        npz_path = save_outputs(result, out_dir, cfg, profile, args, bregma_row, bregma_col)
+        npz_path = save_outputs(result, out_dir, cfg, profile, args, bregma_row, bregma_col,
+                                roi_set_path=roi_set_path)
         summary.append((label, _mean_offdiag(result.R_mean), npz_path))
 
     print(f"\nDone: {len(summary)} recording(s) -> {args.output_dir}")

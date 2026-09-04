@@ -167,12 +167,79 @@ Everything else:
 | | |
 |---|---|
 | `n` / `p` | next / previous session |
+| `c` | copy the **previous** page's layout (boxes, scale **and** Bregma) onto this one |
 | `s` / `S` | save this session / save **every** session |
+| `ctrl`+`s` | save only the sessions with unsaved changes (the `*unsaved*` ones) |
 | `w` | write the **shared** ROI set (one file for all sessions) |
 | `a` / `A` | apply this layout to all sessions (boxes **and** scale) — `A` also copies Bregma |
 | `r` | reset this page to how it started (boxes, Bregma **and** scale) |
 | `[` / `]` | display contrast |
 | `h` / `q` | print help / quit |
+
+The button bar above the image duplicates the gestures that are easiest to reach for
+with the mouse: `<< Previous`, `Rotate left`, `Save`, `Resume`, `Rotate right`,
+`Next >>`, and on a second row `Copy previous page's ROIs` (= `c`) and
+`Save modified (N)` (= `ctrl`+`s`), whose label counts the pages still unsaved and
+which greys out when there are none.
+
+### Moving between pages, and the Resume button
+
+Paging is not stateless — with hundreds of recordings, re-fitting the atlas from
+scratch on every page would be the whole job done N times:
+
+- **The first time you open a page, it takes the layout you are looking at now**
+  (boxes and Lambda scale, not Bregma). An adjustment made once follows you forward
+  through a run of similar recordings.
+- **Unless that page already has its own `<key>.yaml`** — seeded at startup with
+  `load_existing: True`, or written earlier in this run. Those boxes were drawn for
+  *that* recording, so arriving on the page keeps them and says so in the status line.
+- **A page you have already visited keeps whatever you left it at**, edited or not.
+- `c` overrides all of the above on demand.
+
+**`Resume`** reloads the current page from disk, in three steps:
+
+1. Its own `<roi_set_dir>/<key>.yaml`, if it exists — discarding only the edits made
+   since that save (`r`, by contrast, goes back to how the page opened this run; `l`
+   removes only the Lambda stretch). The page then matches its file, so it stops
+   counting as modified and `r` is re-pointed at this layout.
+2. Its own `<roi_seed_dir>/<key>.yaml`, when a read-only seed directory is configured
+   (see below). Still this recording's own geometry, so the page counts as saved —
+   this is the "throw my changes away and go back to the reference layout" button.
+3. Otherwise **the most recently saved ROI set in `roi_set_dir`**, whichever page it
+   belongs to. Early in a run almost no page has a file of its own, and the layout you
+   last committed beats starting from the raw atlas. Because that geometry (Bregma
+   included) was drawn for a *different* recording, the page stays **unsaved** — it
+   remains in the `Save modified` batch, and `r` still returns to its own starting
+   layout. Check it against this anatomy and press `s`.
+
+If `roi_set_dir` holds no ROI set at all, Resume says so and changes nothing.
+
+### Reviewing a reference set without overwriting it (`roi_seed_dir`)
+
+`roi_set_dir` is where saves go. `roi_seed_dir` is an optional **read-only** directory
+of starting layouts — nothing is ever written to it. Set both to open a verified set,
+page through it, adjust what you want, and have the adjustments land somewhere else:
+
+```bash
+"$CONDA" run --no-capture-output -n letizia python batch_roi_select.py \
+    --roi-seed-dir roi_sets/rebuilt --roi-set-dir roi_sets/reviewed
+```
+
+Starting layout per page, in order: your own saved set in `roi_set_dir` (so re-running
+resumes your work), then `<roi_seed_dir>/<key>.yaml`, then `--start-from`, then the
+profile atlas. Both of the first two count as the page's *own* set, so page-to-page
+carry-over will not silently overwrite them.
+
+Because each seed file carries its own `bregma_row` / `bregma_col` /
+`lambda_row_offset`, a page opens exactly as it was written and at scale **1.000×** —
+the rescale knob starts neutral rather than stretching an already-scaled layout again.
+
+`roi_seed_dir: None` restores the original single-directory behaviour.
+
+`roi_sets/rebuilt` is the set written by [`rebuild_roi_sets.py`](../rebuild_roi_sets.py):
+every recording regenerated as a pure Lambda rescale of the baseline atlas, bilaterally
+symmetric by construction. Keeping it as a seed directory rather than an output is what
+keeps that guarantee true.
 
 Only Bregma is clamped to the frame, not the boxes it carries — so a 22-box layout
 dragged near an edge *will* push boxes out. They turn **red**, the status line names

@@ -4,5 +4,9 @@
   "python.testing.pytestEnabled": true,
   "python.testing.unittestEnabled": false,
   "python.testing.pytestArgs": ["tests"],
-  "python.analysis.extraPaths": ["src"]
+  "python.analysis.extraPaths": [
+    "src"
+  ],
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda"
 }

@@ -174,8 +174,17 @@ Needs access to a real folder; it won't run on the tiny sample.
 | [src/inspect_channel_intensity.py](src/inspect_channel_intensity.py) | Utility: inspect an interleaved folder's odd/even channel brightness (which is GCaMP?). Writes a CSV. |
 | [roi_editor.py](roi_editor.py) | **Utility (opens a pyqtgraph/Qt window).** Shows the first image of each recording on the analysis grid; drag the ROI boxes, drag Bregma to move the whole layout at once, or drag Lambda to rescale it, then save a ROI set. See [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md). |
 | [run_intermingle_rs.py](run_intermingle_rs.py) | Study script: RS connectivity on interleaved folders. Point `--folder` at one recording, an animal, or a whole day — every folder holding TIFFs below it is analysed separately into `<output-dir>\<animal>\<t#>\` (`--roi-set` to use drawn ROIs). |
-| [run_botox_batch.py](run_botox_batch.py) | Study script: the BOTOX manifest batch — one analysis per `t#` recording, each in its own output subfolder (`--merge-recordings` to concatenate them into one trial per animal instead; `--roi-set-dir` / `--roi-set` for drawn ROIs). |
+| [run_botox_batch.py](run_botox_batch.py) | Study script: the BOTOX manifest batch — one analysis per `t#` recording, each in its own output subfolder (`--merge-recordings` to concatenate them into one trial per animal instead; `--roi-set-dir` / `--roi-set` for drawn ROIs). `--roi-set-dir` resolves `<day>_<animal>_<t#>.yaml` first, so `roi_sets/rebuilt/` gives every recording its own geometry. Writes `roi_fluorescence_*.csv` (per-ROI ΔF/F per frame) next to each `.npz`. `--save-data` additionally dumps the per-pixel ΔF/F and both channels' raw F as `.npy` volumes (~197 MB/recording; `--save-data-root` puts them on another disk). |
 | [scan_botox_dataset.py](scan_botox_dataset.py) | Study script: scans the dataset share and writes `manifests/botox_restani_manifest.csv`. |
+
+`run_botox_batch.py` defaults to `workers=1`: every `t#` runs in the main process,
+with no multiprocessing queue or spawned-worker DLL loading. With no arguments it
+runs full streaming against `roi_sets/rebuilt` and resumes completed `.npz` jobs.
+Values above 1 enable the experimental process-pool path, which is not recommended
+for the full batch on this Windows machine because native worker crashes persist.
+If an interruption left a completed result without its `batch_summary.csv` row,
+the next run reconstructs that row from the saved metadata. Serial output is live;
+Ctrl+C stops cleanly and completed results remain resumable.
 
 ### The library (`src/wfci/`) — imported, not run
 
@@ -253,13 +262,19 @@ Details and the file format: [README: bringing your own ROI atlas](README.md#bri
 Draw them instead of guessing coordinates:
 ```bash
 "$CONDA" run --no-capture-output -n letizia python roi_editor.py   # window: drag, then 's'
-"$CONDA" run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full
+"$CONDA" run -n letizia python run_botox_batch.py --roi-set-dir roi_sets/rebuilt --full
 ```
 Two drags do most of the work: the magenta `+` (**Bregma**) translates the whole layout,
 and the green `x` (**Lambda**) rescales it — its distance from Bregma is the scale the
 box offsets are in, so putting both markers on the animal's real landmarks fits the
 atlas to *that* brain instead of nudging 22 boxes one at a time. Press `A` then `w` to
 write ONE layout used by every session instead.
+
+Going through many pages: `c` (button: *Copy previous page's ROIs*) puts the previous
+page's boxes, scale and Bregma on the current one, so a layout adjusted for one
+recording can be carried to the next and only touched up. When you are done,
+`ctrl`+`s` (button: *Save modified (N)*) writes a file for every page you changed and
+leaves the untouched ones alone — `S` still rewrites all of them.
 Full walkthrough: [docs/ROI_EDITOR.md](docs/ROI_EDITOR.md).
 
 ### …compare groups of animals (healthy vs disease)

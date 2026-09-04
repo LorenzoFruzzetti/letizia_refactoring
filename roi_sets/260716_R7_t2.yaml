@@ -1,0 +1,30 @@
+name: 260716_R7_t2
+grid: [128, 128]
+source: drawn with roi_editor.py on the cortical_gsr preview grid; folder F:\WF_2026\starting\260716\R7\t2
+bregma_row: 102
+bregma_col: 122
+downsample: 0.5
+lambda_row_offset: 50
+boxes:
+  M2L_alta: {row_start: -26, row_end: -21, col_start: -13, col_end: -8}
+  M2L_bassa: {row_start: -6, row_end: -1, col_start: -6, col_end: -1}
+  M1L_alta: {row_start: -16, row_end: -11, col_start: -29, col_end: -24}
+  M1L_bassa: {row_start: -6, row_end: -1, col_start: -17, col_end: -12}
+  BFDL: {row_start: 14, row_end: 19, col_start: -38, col_end: -33}
+  TrL: {row_start: 14, row_end: 19, col_start: -24, col_end: -19}
+  FLL: {row_start: 0, row_end: 5, col_start: -29, col_end: -24}
+  HLL: {row_start: 7, row_end: 12, col_start: -18, col_end: -13}
+  RSL_alta: {row_start: 24, row_end: 29, col_start: -6, col_end: -1}
+  V1aL: {row_start: 24, row_end: 29, col_start: -26, col_end: -21}
+  V1L: {row_start: 37, row_end: 42, col_start: -26, col_end: -21}
+  M2R_alta: {row_start: -26, row_end: -21, col_start: 9, col_end: 14}
+  M2R_bassa: {row_start: -6, row_end: -1, col_start: 1, col_end: 6}
+  M1R_alta: {row_start: -16, row_end: -11, col_start: 24, col_end: 29}
+  M1R_bassa: {row_start: -6, row_end: -1, col_start: 12, col_end: 17}
+  BFDR: {row_start: 14, row_end: 19, col_start: 33, col_end: 38}
+  TrR: {row_start: 14, row_end: 19, col_start: 19, col_end: 24}
+  FLR: {row_start: 0, row_end: 5, col_start: 24, col_end: 29}
+  HLR: {row_start: 7, row_end: 12, col_start: 14, col_end: 19}
+  RSR_alta: {row_start: 24, row_end: 29, col_start: 1, col_end: 6}
+  V1aR: {row_start: 24, row_end: 29, col_start: 21, col_end: 26}
+  V1R: {row_start: 37, row_end: 42, col_start: 24, col_end: 29}

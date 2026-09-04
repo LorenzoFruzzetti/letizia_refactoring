@@ -65,6 +65,9 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"   # Git Bash
 | Run one interleaved folder with the 22 cortical ROIs (the default) | `conda run -n letizia python run_intermingle_rs.py --roi-set roi_sets/cortex22_roi_set.yaml --full` |
 | Run one interleaved folder with the ROIs you drew | `conda run -n letizia python run_intermingle_rs.py --roi-set roi_sets/260611_R1.yaml --full` |
 | Run every recording under a day/animal folder, each separately | `conda run -n letizia python run_intermingle_rs.py --folder "\\\\146.48.88.209\\share2\\BOTOX_RESTANI\\260611" --output-dir outputs/intermingle_260611` |
+| Run the manifest batch with reliable project defaults (full, rebuilt per-recording ROIs, resume, serial main process) | `conda run -n letizia python run_botox_batch.py` |
+| Run the manifest batch with the reliable mode stated explicitly | `conda run -n letizia python run_botox_batch.py --workers 1` |
+| Run the manifest batch, one ROI set per **recording** | `conda run -n letizia python run_botox_batch.py --roi-set-dir roi_sets/rebuilt --full` |
 | Run the manifest batch, one ROI set per animal | `conda run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full` |
 | Run the manifest batch, the same ROIs for every session | `conda run -n letizia python run_botox_batch.py --roi-set roi_sets/shared_roi_set.yaml --full` |
 | Run the manifest batch as ONE concatenated trial per animal (instead of one per `t#`) | `conda run -n letizia python run_botox_batch.py --merge-recordings --full` |
@@ -254,7 +257,14 @@ list.
 recording on the final analysis grid and lets you drag the boxes onto the anatomy, then
 writes a **ROI set** — an atlas file plus the Bregma the boxes were drawn from — that
 `run_intermingle_rs.py` (`--roi-set`) and `run_botox_batch.py` (`--roi-set-dir` per
-animal, or `--roi-set` for one shared layout) load directly. Two landmarks do the heavy
+recording or per animal, or `--roi-set` for one shared layout) load directly.
+
+Inside `--roi-set-dir`, `run_botox_batch.py` looks for the most specific file first:
+`<day>_<animal>_<t#>.yaml` (one ROI set **per recording**), then
+`<day>_<animal>.yaml` (one per animal), then the shared `--roi-set`. That is why
+`roi_sets/rebuilt/` — 355 files, one per recording in the manifest — is used with
+`--roi-set-dir roi_sets/rebuilt`: each `t#` is analysed with the boxes and Bregma
+that belong to it. Two landmarks do the heavy
 lifting: dragging **Bregma** translates the whole layout rigidly, and dragging
 **Lambda** — whose distance from Bregma is the scale the offsets are in — stretches or
 shrinks it about Bregma, for a brain that sits bigger or smaller in the field of view.
@@ -341,6 +351,70 @@ something you can label from memory afterwards.
 
 `examples/run_example.py` additionally writes `examples/output/roi_overlay.png`
 (step-2 ROI-placement overlay).
+
+`run_botox_batch.py` writes, per analysis (one folder per `t#` recording under
+`<output_root>/<day>_<animal>/<t#>/`, or one per animal when `--merge-recordings`):
+
+| File | What it holds |
+|------|---------------|
+| `connectivity_full.npz` (`_debug` in debug mode) | the arrays above, plus `day`, `animal`, `group`, `bregma`, `roi_set`, `recording_path` |
+| `roi_fluorescence_full.csv` (`_debug`) | **the intermediate per-ROI fluorescence**: `temp_roi` as plain text, one row per frame (`trial`, `frame`, then one ΔF/F column per ROI). Same numbers the correlations are computed from, readable without loading the pipeline. |
+| `roi_traces_full.png` (`_debug`) | trial-averaged ROI traces |
+| `roi_overlay_debug.png` | ROI placement over the anatomy (debug/in-memory runs only) |
+
+With `--save-data` it additionally writes the **per-pixel** volumes the ROI means
+are computed from, into `<save-data-root>/<day>_<animal>/<t#>/` (or beside the
+`.npz` when `--save-data-root` is omitted):
+
+| File | What it holds |
+|------|---------------|
+| `pixels_dff_full.npy` (`_debug`) | corrected ΔF/F per pixel, `[time, y, x]`, float16 |
+| `pixels_f_gcamp_full.npy` (`_debug`) | raw GCaMP fluorescence per pixel, `[time, y, x]`, float32 |
+| `pixels_f_emo_full.npy` (`_debug`) | raw reflectance fluorescence per pixel, same shape/dtype |
+| `pixels_meta_full.npz` (`_debug`) | `mean_f`/`mean_r` baseline images, the crop `region`, Bregma, grid, dtypes, ROI labels |
+
+Read them back without loading the whole volume:
+
+```python
+import numpy as np
+dff = np.load("pixels_dff_full.npy", mmap_mode="r")   # [2980, 76, 87]
+frame = dff[100]                                       # one frame
+trace = dff[:, 40, 45]                                 # one pixel's time-course
+```
+
+The frames are cropped to a **Bregma-relative window** (`save_data_window` in
+`RUN_CONFIG`, default `(-29, 47, -44, 43)` → 76×87, 40% of the 128×128 grid).
+That window is the measured union of every ROI box across all of `roi_sets/rebuilt`,
+so no box is ever clipped — and being anchored to Bregma it names the same anatomy
+in every animal, so volumes stack directly across recordings. `pixels_meta_*.npz`
+records the crop origin, so `full_row = region[0] + dumped_row`. Set
+`save_data_window = None` for the whole frame.
+
+Storage dtypes are selectable per run with `--save-data-dff-dtype` /
+`--save-data-f-dtype` (`float16` | `float32` | `float64`); the numeric path stays
+float64 regardless. The defaults are measured, not guessed: float16 changes
+`R_mean` by 4e-6 for ΔF/F (free), but quantises raw F by ~12% of its temporal
+signal and sits only 3.6% under an overflow ceiling the camera itself exceeds —
+so F stays float32, which is *exactly* lossless here. See CLAUDE.md §9.16. When
+reading a float16 volume back, `.astype(np.float64)` before reducing it.
+
+Cost: **~197 MB per recording** (~70 GB for the full 355-recording manifest), against
+~1.9 MB for everything else a job writes. The run refuses to start if the estimate
+does not fit the target disk with 5 GB to spare. Writing is free in time — measured
+300.9 s with the dump against 301.0 s without, on the same 3000-frame recording — and
+the ROI traces are unchanged.
+
+plus one `batch_summary.csv` at `<output_root>/`, indexing every analysis
+(day, animal, group, profile, Bregma, `roi_set` used, `mean_offdiag_R`, elapsed
+time, `npz_path`). Each `t#` is an independent job. The supported default is
+`workers=1`, which runs in the main process without Windows multiprocessing.
+Values above 1 enable an experimental process pool that has shown intermittent
+native DLL crashes on this machine and is not recommended for the full batch.
+Completed `.npz` jobs are skipped by default when restarting. The summary is
+flushed after each result, and if an interruption left a completed `.npz` without
+its CSV row, the next run reconstructs that row from the saved metadata. Serial
+jobs print live and Ctrl+C stops the main process cleanly. The experimental parallel
+path buffers job logs, emits a heartbeat, and terminates workers on Ctrl+C.
 
 `benchmarks/benchmark_modalities.py` writes `outputs/modality_comparison.txt` —
 a plain-text report comparing all four layouts (`stack` | `folder` | `stream` |

@@ -31,6 +31,7 @@ from .cohort import (
 )
 from .config import Box, ROIConfig
 from .correction import build_dff_stack, hemodynamic_correction
+from .dump import VOLUME_NAMES, PixelDump
 from .io import (
     FrameSource,
     folder_frame_source,
@@ -134,6 +135,8 @@ __all__ = [
     "run_streaming_resting_state",
     "run_streaming_stimulated",
     "StreamingResult",
+    "PixelDump",
+    "VOLUME_NAMES",
     "overlay_rois",
     "show_roi_placement",
     "AnimalResult",

@@ -1,0 +1,31 @@
+name: data_data_Atea
+grid: [128, 128]
+source: 'rebuilt by rebuild_roi_sets.py: cortex22_roi_set.yaml scaled by lambda 55/55
+  = 1.0000; bilaterally symmetric by construction'
+bregma_row: 124
+bregma_col: 126
+downsample: 0.5
+lambda_row_offset: 55
+boxes:
+  M2L_alta: {row_start: -28, row_end: -23, col_start: -15, col_end: -10}
+  M2L_bassa: {row_start: -10, row_end: -5, col_start: -10, col_end: -5}
+  M1L_alta: {row_start: -17, row_end: -12, col_start: -32, col_end: -27}
+  M1L_bassa: {row_start: -6, row_end: -1, col_start: -20, col_end: -15}
+  BFDL: {row_start: 17, row_end: 22, col_start: -42, col_end: -37}
+  TrL: {row_start: 18, row_end: 23, col_start: -26, col_end: -21}
+  FLL: {row_start: 0, row_end: 5, col_start: -32, col_end: -27}
+  HLL: {row_start: 7, row_end: 12, col_start: -22, col_end: -17}
+  RSL_alta: {row_start: 25, row_end: 30, col_start: -9, col_end: -4}
+  V1aL: {row_start: 27, row_end: 32, col_start: -28, col_end: -23}
+  V1L: {row_start: 41, row_end: 46, col_start: -30, col_end: -25}
+  M2R_alta: {row_start: -28, row_end: -23, col_start: 10, col_end: 15}
+  M2R_bassa: {row_start: -10, row_end: -5, col_start: 5, col_end: 10}
+  M1R_alta: {row_start: -17, row_end: -12, col_start: 27, col_end: 32}
+  M1R_bassa: {row_start: -6, row_end: -1, col_start: 15, col_end: 20}
+  BFDR: {row_start: 17, row_end: 22, col_start: 37, col_end: 42}
+  TrR: {row_start: 18, row_end: 23, col_start: 21, col_end: 26}
+  FLR: {row_start: 0, row_end: 5, col_start: 27, col_end: 32}
+  HLR: {row_start: 7, row_end: 12, col_start: 17, col_end: 22}
+  RSR_alta: {row_start: 25, row_end: 30, col_start: 4, col_end: 9}
+  V1aR: {row_start: 27, row_end: 32, col_start: 23, col_end: 28}
+  V1R: {row_start: 41, row_end: 46, col_start: 25, col_end: 30}

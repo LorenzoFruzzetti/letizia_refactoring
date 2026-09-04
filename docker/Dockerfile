@@ -54,8 +54,13 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 #    Provides `code tunnel`, which makes an OUTBOUND connection to vscode.dev
 #    and lets a VS Code desktop elsewhere attach to this container. No inbound
 #    port, no sshd, nothing for the conference firewall to block.
+#
+#    `os=cli-alpine-x64` is correct even though this is not Alpine: Microsoft
+#    ships one statically-linked musl build of the CLI for all Linux x64, and
+#    it is the only x64 Linux identifier the download endpoint serves --
+#    `cli-linux-x64` returns 404.
 # ---------------------------------------------------------------------------
-RUN curl -fsSL "https://code.visualstudio.com/sha/download?build=stable&os=cli-linux-x64" \
+RUN curl -fsSL "https://code.visualstudio.com/sha/download?build=stable&os=cli-alpine-x64" \
         -o /tmp/vscode-cli.tar.gz \
     && tar -xzf /tmp/vscode-cli.tar.gz -C /usr/local/bin \
     && rm /tmp/vscode-cli.tar.gz \

@@ -48,7 +48,7 @@ from typing import Any
 RUN_CONFIG: dict[str, Any] = {
     # Root of the dataset tree (day\animal\recording\*.tif). Raw string so the
     # UNC backslashes are not read as escapes.
-    "root": r"\\146.48.88.209\share2\BOTOX_RESTANI",
+    "root": r"F:\WF_2026\starting",
     # Where the manifest CSV is written (parent dir created if missing).
     "out": r"manifests\botox_restani_manifest.csv",
     # Count the TIFFs in every recording folder. Accurate but hits the network for

@@ -56,6 +56,17 @@ if ! mountpoint -q "${STICK_MOUNT}"; then
     [[ "${reply}" == "y" || "${reply}" == "Y" ]] || exit 1
 fi
 
+# Without this check, a missing image makes `docker run` fall back to pulling
+# from Docker Hub, which fails with a confusing "pull access denied ... may
+# require 'docker login'" -- the real cause is almost always a build that did
+# not finish. (Docker 19.03 has no `docker run --pull=never`.)
+if ! docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    echo "ERROR: image '${IMAGE}' does not exist locally. Build it first:" >&2
+    echo "         docker build -f docker/Dockerfile -t ${IMAGE} \\" >&2
+    echo "             --build-arg UID=\$(id -u) --build-arg GID=\$(id -g) ." >&2
+    exit 1
+fi
+
 if [[ ! -d "${REPO_DIR}/src/wfci" ]]; then
     echo "ERROR: ${REPO_DIR} does not look like the letizia repo (no src/wfci)." >&2
     echo "       Clone it first, or pass --repo /path/to/clone." >&2

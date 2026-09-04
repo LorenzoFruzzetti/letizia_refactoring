@@ -57,7 +57,8 @@ Same math as `correction.py` + `roi.py` (+ `mask.py`/`gsr.py`), but never holds 
 full stack in RAM — for recordings too large to load (the MATLAB
 `>4gb non lo legge` case).
 - `stream_trial_roi(gcamp, emo, cfg, baseline_slice, trim=20, downsample=0.5,
-  mask=None, gsr=None, mask_threshold=0.0) -> [time, n_rois]` — streams one trial
+  mask=None, gsr=None, mask_threshold=0.0, expected_grid=None, pixel_dump=None)
+  -> [time, n_rois]` — streams one trial
   to its ROI trace in **two passes**: pass 1 accumulates the baseline-window
   running sum of the half-res frames → `MIf`/`MIr`; pass 2 re-reads, applies ΔF/F
   per frame, downsamples again, and reduces each frame to `n_rois` `nanmean`
@@ -68,13 +69,42 @@ full stack in RAM — for recordings too large to load (the MATLAB
   downsample, mask=None, gsr=None) -> StreamingResult` — streams each
   `(gcamp, emo)` FrameSource pair to its `[time, n_rois]` trace, stacks to
   `[time, n_rois, trial]`, then runs the usual `functional_connectivity`.
-- `run_streaming_profile(trial_sources, cfg, profile, mask=None)` — streaming
-  counterpart of `run_profile`. Same profile, same numbers, constant memory.
+- `run_streaming_profile(trial_sources, cfg, profile, mask=None,
+  pixel_dump_factory=None)` — streaming counterpart of `run_profile`. Same
+  profile, same numbers, constant memory.
 - `run_streaming_resting_state` / `run_streaming_stimulated` — window presets
   matching `run_resting_state` / `run_stimulated`.
 - `StreamingResult(temp_roi, R, R_mean, averaged_traces)` — like
   `PipelineResult` but **without `dff_stack`** (it is streamed away, so step-2
-  visualization requires the in-memory path).
+  visualization requires the in-memory path). To keep the pixels, attach a
+  `wfci.dump.PixelDump` instead — see below.
+
+### `dump.py` (optional per-pixel dumps)
+Writes the pixels the streaming path would otherwise discard, **from inside
+pass 2**, so the pass count and memory profile are unchanged.
+- `PixelDump(out_dir, suffix, n_time, region=None, downsample=0.5,
+  dff_dtype=np.float16, f_dtype=np.float32, metadata=None)` — preallocates three
+  `.npy` volumes with `np.lib.format.open_memmap` and fills them frame by frame.
+  - `.baselines(mean_f, mean_r)` — called once after pass 1.
+  - `.frame(idx, g_half, e_half, dff_q)` — called once per frame with pass 2's own
+    locals; brings the half-res raw frames onto the final grid and applies `region`.
+  - `.close()` — flushes and writes `pixels_meta_<suffix>.npz`.
+  - `.path(name)` / `.meta_path` / `.shape` — where things landed.
+- Volumes: `pixels_{dff,f_gcamp,f_emo}_<suffix>.npy`, all `[time, y, x]` — the one
+  deliberate exception to the library's `[y, x, time]` order, for output files only
+  (contiguous frame writes; also ImageJ's order). Read with
+  `np.load(path, mmap_mode="r")`.
+- `region=(row0, row1, col0, col1)` is a half-open crop on the final grid. It is
+  **validated, never clipped**: a window outside the grid raises.
+- Values are range-checked before the dtype cast, so an overflow raises instead of
+  writing `inf`.
+- **Refuses GSR**: the streaming GSR path never materialises a post-GSR per-pixel
+  frame, and producing one would need a third pass (I10).
+- `dff` is dumped rather than derived because the pipeline corrects at half
+  resolution and downsamples the *result*; a ratio recomputed from the dumped
+  (already downsampled) F volumes is close but not equal. `F / mean` from the
+  sidecar baselines gives the per-channel MATLAB `If2`/`Ir2`.
+- Guarded by `tests/test_dump.py`.
 
 **GSR under streaming** (`_stream_pass2_gsr`) — GSR regresses each pixel's *whole*
 time-series against the global signal, which looks like it needs `[y,x,time]`
@@ -204,8 +234,9 @@ resident. It does not, for two reasons:
   — `nanmean` over rows and cols of each ROI box → `TEMP_ROI`. Sized from
   `len(cfg.boxes)`; nothing is fixed at 4.
 - `functional_connectivity(temp_roi, window) -> (R, R_mean, averaged_traces)` —
-  per-trial `np.corrcoef` (columns = regions) over `window`, then trial means.
-  `np.corrcoef` matches MATLAB `corr` (N vs N−1 normalisation cancels).
+  per-trial explicit float64 Pearson correlation (columns = regions) over
+  `window`, then trial means. It matches MATLAB `corr` (N vs N−1 normalisation
+  cancels) without dispatching this small matrix to BLAS.
 
 ### `visualize.py` (step 2)
 - `overlay_rois(frame, cfg, fill=1.0)` — paint the four ROI boxes onto a frame.
