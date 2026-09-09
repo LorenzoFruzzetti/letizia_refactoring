@@ -125,7 +125,7 @@ This is the single easiest thing to get wrong. Every rule here is a real trap.
 ## 4. Install & run in one breath
 
 ```bash
-CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"      # this machine
+CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"      # this machine
 "$CONDA" env create -f .env/environment.yml             # env `letizia`, py3.11
 "$CONDA" run -n letizia pip install -e .                # editable install
 "$CONDA" run -n letizia python -m pytest tests/ -q      # 156 tests, all green

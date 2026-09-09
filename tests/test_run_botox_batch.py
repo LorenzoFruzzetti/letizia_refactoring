@@ -159,21 +159,44 @@ def test_workers_one_never_constructs_a_process_pool(tmp_path, monkeypatch):
     assert batch._summary_key(recovered[0]) == ('260611', 'PV5', 'full', 't1')
 
 
-def test_save_data_is_off_by_default_and_reaches_the_namespace():
+def test_save_data_config_reaches_the_namespace_intact():
     """Every save_data key must survive build_runtime_args' editor path.
 
     That path builds an explicit Namespace field by field rather than splatting
     RUN_CONFIG, so a key added to the dict but not to the literal is not caught
     until a run reaches the code that reads it -- late, and only when the flag is
     on. Assert the whole set instead.
+
+    The values asserted are this study's configured run: dumps ON, into
+    pixel_data\\ inside the repo (gitignored). If the study's settings change,
+    update them here -- but never drop an assertion, that is the point.
     """
     args = batch.build_runtime_args(dict(batch.RUN_CONFIG, prefer_cli_args=False))
 
-    assert args.save_data is False, "save_data must default to off"
-    assert args.save_data_root is None
+    assert args.save_data is True, 'this run dumps the per-pixel volumes'
+    assert args.save_data_root == 'pixel_data'
     assert args.save_data_window == (-29, 47, -44, 43)
     assert args.save_data_dff_dtype == 'float16'
     assert args.save_data_f_dtype == 'float32'
+
+
+def test_save_data_can_still_be_turned_off_from_the_cli(monkeypatch):
+    """--no-save-data must beat RUN_CONFIG, now that the config default is ON.
+
+    With the default off, forgetting the off-switch cost nothing. With it on, a
+    broken --no-save-data silently writes ~197 MB per recording that the caller
+    explicitly asked not to have.
+    """
+    import sys
+
+    monkeypatch.setattr(sys, 'argv', ['run_botox_batch.py', '--no-save-data'])
+    args = batch.build_runtime_args(dict(batch.RUN_CONFIG))
+
+    assert args.save_data is False
+    # The rest of the dump settings still come through, so --save-data alone
+    # on a later run needs no other flags.
+    assert args.save_data_root == 'pixel_data'
+    assert args.save_data_window == (-29, 47, -44, 43)
 
 
 def test_dump_region_is_anchored_to_this_recordings_bregma():

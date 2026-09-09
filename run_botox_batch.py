@@ -32,15 +32,17 @@ the default separate mode, under a further ``<t#>\\`` subfolder per recording:
                                    are computed from, readable without numpy.
     * roi_traces[_debug].png    -- trial-averaged ROI traces.
     * roi_overlay_debug.png     -- ROI placement (debug/in-memory mode only).
-With ``--save-data`` it also writes, under ``<save_data_root>`` (or beside the
-.npz), the PER-PIXEL volumes the ROI means are reduced from:
+``save_data`` is ON in RUN_CONFIG, so it also writes, under
+``<save_data_root>`` -- ``pixel_data\\`` inside this repo, gitignored -- the
+PER-PIXEL volumes the ROI means are reduced from:
     * pixels_dff_*.npy          -- corrected dF/F per pixel, [time, y, x], float16.
     * pixels_f_gcamp_*.npy      -- raw GCaMP fluorescence per pixel, float32.
     * pixels_f_emo_*.npy        -- raw reflectance fluorescence per pixel, float32.
     * pixels_meta_*.npz         -- mean_f/mean_r baselines, the crop region, Bregma.
 Frames are cropped to a Bregma-relative window (``save_data_window``), so every
 recording's volume has the same shape AND the same anatomical meaning. ~197 MB per
-recording; the run refuses to start if the estimate will not fit the disk. The
+recording, ~70 GB for the whole manifest; the run refuses to start if the
+estimate will not fit the disk. Pass ``--no-save-data`` to skip them. The
 volumes are written as the recording streams, so they cost no extra pass and no
 extra time, and the ROI traces are unchanged.
 One summary row per recording (or per unit when merging) is appended to
@@ -80,7 +82,8 @@ Row selection:
 
 Run it -- RUN_CONFIG below is already set up for the reliable real run (every unit
 in the manifest, full streaming, the per-recording ROI sets in roi_sets\\rebuilt,
-serial execution), so with no flags at all this does the whole batch:
+serial execution, per-pixel dumps into pixel_data\\), so with no flags at all
+this does the whole batch:
 
     conda run -n letizia python run_botox_batch.py                  # editor mode, uses RUN_CONFIG
     conda run -n letizia python run_botox_batch.py --workers 1      # explicit reliable default
@@ -88,6 +91,7 @@ serial execution), so with no flags at all this does the whole batch:
     conda run -n letizia python run_botox_batch.py --select 260611/R1 260611/R2
     conda run -n letizia python run_botox_batch.py --debug          # fast smoke test
     conda run -n letizia python run_botox_batch.py --no-skip-existing   # recompute everything
+    conda run -n letizia python run_botox_batch.py --no-save-data       # ROI means only, no pixel volumes
     conda run -n letizia python run_botox_batch.py --merge-recordings   # one concatenated trial per animal
 
 Edit ``RUN_CONFIG`` and run -- no CLI flags needed. Errors are left to surface.
@@ -212,17 +216,21 @@ RUN_CONFIG: dict[str, Any] = {
     # to force everything to be recomputed from scratch.
     "skip_existing": True,
     # --- per-pixel dumps (save_data) ---------------------------------------
-    # False (default) keeps the pipeline as it was: only the 22 ROI means survive
-    # each frame. True additionally writes, per recording, the pixel-wise volumes
-    # the ROI means are computed from -- the corrected dF/F and the raw
-    # fluorescence of BOTH channels -- as .npy files written frame by frame while
-    # the recording streams. Costs ~197 MB per recording (see save_data_window).
-    "save_data": False,
+    # True (the setting for this run) additionally writes, per recording, the
+    # pixel-wise volumes the ROI means are computed from -- the corrected dF/F and
+    # the raw fluorescence of BOTH channels -- as .npy files written frame by frame
+    # while the recording streams. Costs ~197 MB per recording (see
+    # save_data_window), ~70 GB across the full 355-recording manifest; the run
+    # refuses to start if that will not fit. False keeps the pipeline as it was:
+    # only the 22 ROI means survive each frame.
+    "save_data": True,
     # Where the volumes go. None puts them beside the .npz in the analysis output
     # folder. A path mirrors the same <day>_<animal>\<t#>\ tree under it, which is
-    # what you want when the pixels are far larger than the rest of the outputs
-    # and belong on a different disk.
-    "save_data_root": None,
+    # what you want when the pixels are far larger than the rest of the outputs.
+    # "pixel_data" is relative to the repo root, so the volumes land in THIS
+    # project folder, separate from outputs\ -- and .gitignore excludes it, since
+    # ~70 GB of .npy must never enter git history.
+    "save_data_root": r"pixel_data",
     # Crop, as (row_start, row_end, col_start, col_end) offsets RELATIVE TO BREGMA
     # on the final 128x128 grid -- the same coordinate system the ROI boxes use.
     # (-29, 47, -44, 43) is the measured union of every box across all 356 files in

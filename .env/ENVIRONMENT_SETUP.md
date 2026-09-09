@@ -45,13 +45,13 @@ installer reports whether `pyqtgraph` imports.
 
 On this machine `conda` is not on PATH; use the full path to `conda.bat`:
 
-- Git Bash: `"$USERPROFILE/miniconda3/condabin/conda.bat"`
-- PowerShell: `& "$env:USERPROFILE\miniconda3\condabin\conda.bat"`
+- Git Bash: `"$USERPROFILE/anaconda3/condabin/conda.bat"`
+- PowerShell: `& "$env:USERPROFILE\anaconda3\condabin\conda.bat"`
 
 ## Create / update
 
 ```bash
-CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
+CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"
 
 # Create the environment
 "$CONDA" env create -f .env/environment.yml
@@ -68,7 +68,7 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
 1. Install it into the env (conda-forge preferred; fall back to pip):
 
    ```bash
-   CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
+   CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"
    "$CONDA" install -n letizia -y <package>      # e.g. pandas
    # or, if not on conda-forge:
    "$CONDA" run -n letizia pip install <package>
@@ -98,7 +98,7 @@ CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
 ## Interpreter for VS Code
 
 `.vscode/settings.json` pins:
-`C:\Users\loren\miniconda3\envs\letizia\python.exe`
+`C:\Users\utente\anaconda3\envs\letizia\python.exe`
 
 The debugger (`.vscode/launch.json`, `type: debugpy`) uses the same interpreter.
 If the interpreter is not auto-selected, run **Python: Select Interpreter** and

@@ -48,7 +48,7 @@ Commands assume the repository root and the `letizia` conda environment (see
 via its full path:
 
 ```bash
-CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"   # Git Bash
+CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"   # Git Bash
 ```
 
 | Task | Command |
@@ -364,7 +364,13 @@ something you can label from memory afterwards.
 
 With `--save-data` it additionally writes the **per-pixel** volumes the ROI means
 are computed from, into `<save-data-root>/<day>_<animal>/<t#>/` (or beside the
-`.npz` when `--save-data-root` is omitted):
+`.npz` when `--save-data-root` is omitted). `RUN_CONFIG` ships with
+`save_data = True` and `save_data_root = "pixel_data"`, so a plain
+`python run_botox_batch.py` writes them to `pixel_data/` inside this repo;
+`.gitignore` excludes that directory, because the full manifest puts ~70 GB of
+`.npy` there (~197 MB per recording) and it is regenerable from the raw TIFFs.
+The run estimates the total up front and refuses to start if the disk cannot
+hold it:
 
 | File | What it holds |
 |------|---------------|
@@ -647,7 +653,7 @@ these numbers. Treat the cortical path as carefully-read, not machine-verified.
 ### Windows (this machine)
 
 ```bash
-CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"
+CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"
 "$CONDA" env create -f .env/environment.yml     # creates env `letizia` (python 3.11)
 "$CONDA" run -n letizia pip install -e .         # install the wfci package (editable)
 "$CONDA" run -n letizia python -m pytest tests/ -s -v   # verify

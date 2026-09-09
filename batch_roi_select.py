@@ -57,7 +57,7 @@ from wfci import get_profile
 # ---------------------------------------------------------------------------
 RUN_CONFIG: dict[str, Any] = {
     # Root folder: every subfolder that holds at least 2 TIFFs becomes one page.
-    "folder": r"F:\WF_2026\starting",
+    "folder": r"D:\WF_2026\starting",
     "pattern": "*.tif",
     # Profile whose atlas is the starting box layout and whose downsample chain
     # sets the preview grid.  Must match the profile used in run_intermingle_rs.py.

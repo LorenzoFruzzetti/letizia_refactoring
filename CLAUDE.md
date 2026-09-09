@@ -61,8 +61,8 @@ Use this as a baseline and adapt to project conventions:
 
 ### 4.2 Environment Management Rules
 - This project's Conda environment is **`letizia`** (Python 3.11).
-  - Location on disk: `C:\Users\loren\miniconda3\envs\letizia`
-  - Interpreter: `C:\Users\loren\miniconda3\envs\letizia\python.exe`
+  - Location on disk: `C:\Users\utente\anaconda3\envs\letizia`
+  - Interpreter: `C:\Users\utente\anaconda3\envs\letizia\python.exe`
   - Spec / setup docs: `.env/environment.yml`, `.env/requirements.txt`, `.env/ENVIRONMENT_SETUP.md`
 - By default, create and maintain a Conda environment unless the user explicitly opts out.
 - Use non-interactive commands.
@@ -70,13 +70,13 @@ Use this as a baseline and adapt to project conventions:
 - Preferred command style:
   - conda run -n <env_name> <command>
 - On this machine `conda` is not on PATH directly. Use the full path to conda.bat:
-  - PowerShell: `& "$env:USERPROFILE\miniconda3\condabin\conda.bat" run -n <env_name> <command>`
-  - Git Bash: `"$USERPROFILE/miniconda3/condabin/conda.bat" run -n <env_name> <command>`
+  - PowerShell: `& "$env:USERPROFILE\anaconda3\condabin\conda.bat" run -n <env_name> <command>`
+  - Git Bash: `"$USERPROFILE/anaconda3/condabin/conda.bat" run -n <env_name> <command>`
 
 #### Adding a new package to the `letizia` env
 1. Install it (prefer conda-forge; fall back to pip):
-   - `& "$env:USERPROFILE\miniconda3\condabin\conda.bat" install -n letizia -y <package>`
-   - or `& "$env:USERPROFILE\miniconda3\condabin\conda.bat" run -n letizia pip install <package>`
+   - `& "$env:USERPROFILE\anaconda3\condabin\conda.bat" install -n letizia -y <package>`
+   - or `& "$env:USERPROFILE\anaconda3\condabin\conda.bat" run -n letizia pip install <package>`
 2. Record it in BOTH spec files so the env stays reproducible:
    - add `- <package>>=<min-version>` to `.env/environment.yml`
    - add `<package>>=<min-version>` to `.env/requirements.txt`
@@ -371,12 +371,21 @@ imports, so ask first).** Re-point the editable install:
 `conda run -n letizia pip install -e H:\Developing_projects\letizia`
 Then re-test §9.12's parallel path before trusting either conclusion about workers.
 
-### 9.14 The manifest's `F:` paths are stale; the reflectance channel clips
-**Problem.** `manifests\botox_restani_manifest.csv` has `recording_paths` under
+### 9.14 The manifest's `F:` paths were stale; the reflectance channel clips
+**Problem.** `manifests\botox_restani_manifest.csv` had `recording_paths` under
 `F:\WF_2026\starting\...`, but F: is not mounted; the dataset is now at
 `D:\WF_2026\starting\...` (same layout, 6000 TIFFs per `t#`). Any batch run
-against the manifest as committed fails to find its inputs. Regenerate with
-`scan_botox_dataset.py` against the current drive letter before the real run.
+against the manifest as previously committed failed to find its inputs.
+
+**Fix applied (2026-09-04).** `scan_botox_dataset.py` RUN_CONFIG `root` and
+`batch_roi_select.py` RUN_CONFIG `folder` now read `D:\WF_2026\starting`, and the
+manifest was REGENERATED against D: with frame counting on. Checked field by
+field against the previous file: 71 rows, identical in every column once `F:`
+is replaced by `D:`, and `total_frames` is 30000 on every row -- so the D: copy
+is complete, not partial. Every row's Bregma was still the 121/134 default, so
+regenerating discarded no hand edits. The unreferenced root-level
+`botox_restani_manifest.csv` still holds the original `\\146.48.88.209` UNC
+paths and was deliberately left alone.
 
 **Separately, observed while validating `--save-data`:** in `260611/PV5/t1` the
 `emo` (reflectance) baseline image `mean_r` reaches exactly **65535** — the uint16
@@ -466,3 +475,153 @@ temporal signal; float32 costs nothing. Hence `save_data_f_dtype` = float32.
 if the F volumes are never used for anything but a sanity check -- and if a
 recording ever exceeds the ceiling the run stops rather than corrupting silently.
 Both are now selectable per run: `--save-data-dff-dtype` / `--save-data-f-dtype`.
+
+### 9.17 Calling `envs\letizia\python.exe` directly crashes numpy's BLAS (`0xc06d007f`)
+**Problem.** On this machine (`utente`, `C:\Users\utente\anaconda3`) invoking the
+environment interpreter by absolute path — without activation — kills the process
+with the native Windows exception `0xc06d007f` on the very first BLAS call. It is
+not project code: a bare
+
+```python
+import numpy as np; a = np.random.rand(22, 300); a @ a.T
+```
+
+is enough. faulthandler points at `numpy.lib._function_base_impl.cov` when the
+call arrives via `np.corrcoef`, which is exactly the signature recorded in §9.11.
+
+**Cause.** conda-forge's numpy loads its BLAS DLLs (MKL) from
+`envs\letizia\Library\bin`, which is put on `PATH` by *activation*. Running
+`python.exe` straight from the env directory never activates it, so the delay-load
+fails and Windows raises `0xc06d007f` (missing dependent DLL) instead of a Python
+`ImportError`.
+
+**Rule.** Always go through `conda run` — this is what CLAUDE.md §4.2 already
+mandates, and the reason is now concrete:
+
+```bash
+"$USERPROFILE/anaconda3/condabin/conda.bat" run --no-capture-output -n letizia python -m pytest -q
+```
+
+Verified: `python.exe blas_check.py` dies at `a @ a.T`; the identical script under
+`conda run` prints `dot ok` / `corrcoef ok` and exits 0. The full suite run through
+`conda run` is 236 passed, 3 skipped (plus one pre-existing failure, below).
+
+**Relation to §9.11/§9.12.** Same native exception and same numpy frame, so any
+future recurrence should first check how the interpreter was launched before
+concluding the pipeline is at fault. This does NOT by itself prove the worker-pool
+crashes were the same thing — a spawned child inherits the parent's activated
+`PATH` — so §9.12's serial default stands until someone re-tests pools under a
+known-activated environment.
+
+**Use `--no-capture-output`.** Plain `conda run` buffers child stdout and, in this
+Git Bash setup, frequently emitted nothing at all; every "the command produced no
+output" symptom during setup was this.
+
+### 9.18 `>=` in a package spec is eaten by `cmd.exe` when calling `conda.bat` from Git Bash
+**Problem.** `conda.bat` is a batch file, so `cmd.exe` re-parses the argument list
+*after* Bash has stripped the quotes. `>` is then a redirection operator, and
+
+```bash
+"$CONDA" install -n letizia -c conda-forge -y "scipy>=1.10" "pyqtgraph>=0.13"
+```
+
+silently writes conda's entire stdout into repo-root files literally named `1.10`
+and `0.13`, while conda receives only the bare package names. Observed for real:
+four junk files (`0.13`, `1.10`, `6.5`, `7.4` — one per pinned spec) appeared in
+the project root, and the log file the command was redirected to came out 0 bytes.
+
+**Effect.** The version pin is lost, and the install *looks* like it produced no
+output. It also masks failures: the first `pyqtgraph` install appeared to succeed
+with an empty log.
+
+**Fix.** Quote the spec so `cmd` cannot see the operator, or avoid the pin:
+
+```bash
+"$CONDA" install -n letizia -c conda-forge -y 'scipy>=1.10'   # still re-parsed
+"$CONDA" install -n letizia -c conda-forge -y "scipy>=1.10"   # still re-parsed
+"$CONDA" install -n letizia -c conda-forge -y scipy pyqtgraph # safe
+```
+
+Only the unpinned form is reliably safe from Git Bash; use PowerShell (`& "$env:USERPROFILE\anaconda3\condabin\conda.bat" install ... "scipy>=1.10"`)
+or `.env/environment.yml` when a pin actually matters. After any such install,
+check `git status` for stray numeric files in the repo root.
+
+### 9.19 Rebuilding this machine for the dumped-pixel batch (2026-09-04)
+Everything needed to re-run `run_botox_batch.py` here with the per-pixel dumps.
+
+**Dataset.** Now on `D:\WF_2026\starting` (see 9.14). `scan_botox_dataset.py`,
+`batch_roi_select.py` and the regenerated manifest all point there.
+
+**Env.** There was NO `letizia` env on this machine; it had to be built from
+scratch. `conda env create -f .env/environment.yml` failed FOUR times, always
+while unpacking one of the two big packages (`mkl` 109 MB, `qt6-main` 85 MB):
+`[Errno 36] Resource deadlock avoided`, once `[WinError 2]` on a `.conda`
+tarball that had just been downloaded. `CONDA_ALWAYS_COPY`, single-threaded
+extract, and `conda clean` did not help, and the pkgs dir is writable, so it is
+not permissions.
+
+**What worked** -- build it in stages instead of one transaction:
+
+```powershell
+$C = "C:\Users\utente\anaconda3\Library\bin\conda.bat"
+& $C create  -n letizia -c conda-forge python=3.11 -y
+& $C install -n letizia -c conda-forge -y "numpy>=1.24" "scipy>=1.10" "pandas>=2.0" `
+    "tifffile>=2023.7.10" "matplotlib>=3.7" "pyyaml>=6.0" "pytest>=7.4" pip
+& $C install -n letizia -c conda-forge -y "pyqtgraph>=0.13" "pyside6>=6.5"
+& $C run -n letizia pip install -e .        # from THIS repo root -- see 9.13
+```
+
+Each stage is a small transaction, so a stall does not lose the whole env. Note
+the staged install also lets the headless deps land first: only `roi_editor.py`
+needs Qt, so a failing `pyside6` would not block the batch.
+
+**Verified after the rebuild.** `wfci.__file__` resolves to
+`C:\Users\utente\Documents\letizia\letizia_refactoring\src\wfci\__init__.py`,
+so 9.13's wrong-checkout trap is NOT present here. Suite: 238 passed, 3 skipped
+through `conda run` (9.17's rule still applies -- the bare interpreter path is
+fine for stdlib scripts but dies on the first BLAS call).
+
+**Pixel dumps are now ON by default.** The batch reports the real cost up
+front: **64.8 GB for 353 jobs** (the other 2 were already done), against 200 GB
+free on C:. `RUN_CONFIG` has `save_data = True` and
+`save_data_root = "pixel_data"`, i.e. inside this repo, gitignored along with
+`batch_run.log`. `--no-save-data` turns them off; a regression test now covers
+that off-switch, because with the config default ON it is the thing that can
+silently cost 197 MB a recording.
+
+**The dump was checked against the analysis, not just for existence.** Reducing
+the dumped float16 dF/F over each ROI box (`y_1 + row_start - 1 : y_1 + row_end`,
+minus the crop origin in `meta['region']`) reproduces `roi_fluorescence_full.csv`
+-- the traces the correlations were actually computed from -- to a worst
+per-frame disagreement of **9.5e-4 pp across all 22 ROIs, 0.045% of one signal
+sd**. That is the float16 storage cost 9.16 predicts and nothing else. Measured
+on `260611/PV5/t1`: shapes `(2980, 76, 87)`, dtypes float16/float32/float32,
+`f_emo` peak 58607 (11% under float16's 65504 ceiling -- still why raw F is
+float32).
+
+**Do not pipe the batch through `Tee-Object`.** PowerShell buffers the whole
+pipeline, so a 10-hour run produces a 0-byte log and no visible progress. Use
+cmd's OS-level redirection with unbuffered Python:
+
+```powershell
+& cmd /c '"%USERPROFILE%\anaconda3\Library\bin\conda.bat" run --no-capture-output -n letizia python -u run_botox_batch.py > batch_run.log 2>&1'
+```
+
+Interrupting is safe either way: the resume marker is the analysis `.npz`, and a
+killed recording leaves an EMPTY dump folder (verified), not a truncated volume.
+
+**The run completed: 355/355 recordings, 611.6 min (10.2 h), no errors.**
+`batch_summary.csv` has 355 unique day/animal/recording rows, all three groups
+(P/R/T), and `mean_offdiag_R` on every one. `pixel_data` is 65.5 GB in 1420
+files -- exactly 4 per recording -- leaving 138 GB free on C:.
+
+Audited afterwards, not just counted:
+- 355/355 have all four dump files AND an analysis `.npz`.
+- Every volume is `(2980, 76, 87)` float16, one uniform window.
+- Every dump's `meta['bregma_row']/['bregma_col']` equals its OWN
+  `roi_sets/rebuilt/<day>_<animal>_<t#>.yaml`. **53 distinct Bregmas** appear
+  across the 355 -- if 9.4's shared-fallback bug had come back there would be
+  exactly 1, and nothing in the summary would have said so.
+- On 8 recordings sampled across days, animals and groups, reducing the dumped
+  pixels over the ROI boxes reproduces each one's `roi_fluorescence_full.csv`
+  to a worst 1.13e-3 pp (0.069% of one sd) -- the float16 cost, nothing more.

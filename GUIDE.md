@@ -15,8 +15,8 @@ Where you'll want the other docs instead:
 Throughout, `CONDA` is this machine's conda launcher:
 
 ```bash
-CONDA="$USERPROFILE/miniconda3/condabin/conda.bat"     # Git Bash
-# PowerShell:  $CONDA = "$env:USERPROFILE\miniconda3\condabin\conda.bat"
+CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"     # Git Bash
+# PowerShell:  $CONDA = "$env:USERPROFILE\anaconda3\condabin\conda.bat"
 ```
 
 Everything assumes the `letizia` conda environment (Python 3.11). First-time
