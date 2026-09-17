@@ -161,6 +161,30 @@ only then adjust individual boxes:
 | drag a corner handle | resize it (all four corners have one) |
 | arrows / `shift`+arrows | nudge the selected box 1 / 5 px |
 | `+` / `-` | grow / shrink the selected box by 1 px on every side |
+| `m` | toggle the **mirror lock** (on at startup) |
+
+#### The mirror lock
+
+With the lock on, every one-box edit — drag, corner-resize, arrow nudge, `+` / `-` —
+rewrites that box's bilateral twin as its exact reflection about Bregma. Nudge `V1L`
+and `V1R` follows; nudge `V1R` and `V1L` follows. Rows are copied across, columns are
+negated, and the twin is written as a whole box rather than as a mirrored *delta*, so
+a pair that was already crooked is repaired by the next edit to either half.
+
+This exists because every ROI set drawn before it came out asymmetric. Across the 190
+sets drawn in September 2026, `V1` was off in 174 files and `M2_alta` in 165, by up to
+3 px, always on one hemisphere — and because `c` carries a layout forward, one slip
+propagated through the rest of the session. The GUI cannot show you a 2 px asymmetry,
+and the correlation matrix that comes out of it looks entirely normal.
+
+The twin is **not** clamped to the frame. If mirroring pushes it off the image it
+turns red and blocks the save, exactly as a box dragged off the edge does. Squashing
+the twin to fit would be the one outcome worse than a refusal: a silently asymmetric
+pair.
+
+Press `m` to unlock when a one-sided layout is genuinely what you want. The status
+line says which way the toggle went, and the startup banner prints the state.
+`--no-mirror-lock` (or `mirror_lock: False` in `RUN_CONFIG`) starts unlocked.
 
 Everything else:
 

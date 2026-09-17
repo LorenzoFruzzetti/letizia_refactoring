@@ -389,6 +389,27 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   each separately, mirroring the tree under `--output-dir`),
   `run_botox_batch.py` (manifest batch; one analysis per `t#` recording by
   default, or one concatenated trial per animal with `--merge-recordings`).
+- Epileptiform analysis (root, flat scripts, parameters at the top):
+  `test_epileptic_detection.py` (one `roi_fluorescence_full.csv` → events +
+  figures) and `epileptic_by_area_animal_day.py` (every recording of
+  `outputs/botox_restani_rebuilt`; one dataset-calibrated z cut-off; tables by
+  area/animal/day in `outputs/epileptic_by_area_animal_day/`). The second carries
+  copies of the first's detection functions, because a flat script runs on import.
+  `plot_epileptic_per_animal_day.py` reads the second's long table and plots total
+  events per animal per recording day, one line per animal coloured by group.
+  `epileptic_by_area_animal_day_pixels.py` reuses the second's `run_analysis` with
+  its own trace loader, rebuilding the ROI traces from the `pixel_data/` dumps:
+  per-pixel `(F/Fbar)/(R/Rbar) - 1` against a centred 20 s running-median baseline
+  (`--signal-mode median_dff`) or `F * mean_t(R) / R` (`reflectance_ratio`), then
+  the spatial mean over each box of the recording's own atlas.
+  `cache_median_dff.py` computes that per-pixel median-baseline dF/F once for the
+  whole crop of every dump (`pixel_data/*/*/pixels_median_dff_<window>s_full.npy`,
+  float16, meta JSON as completion marker; `multiprocessing.Pool`, default 8
+  workers). `epileptic_by_active_pixels.py` reuses `run_analysis` with a loader that
+  reads that cache (or `pixels_dff_full.npy` with `--dff-source pipeline_dff`) and
+  returns, per hemisphere, the fraction of atlas-box pixels above a per-pixel
+  robust-z threshold.
+  `epileptic_diagnostics.py` holds the per-recording figures all of them share.
 - ROI geometry utility: `roi_editor.py` — interactive placement of the ROI boxes and
   the two landmarks on the first image of each recording (rendered on the final
   analysis grid), writing `roi_sets/<key>.yaml`. Built on **pyqtgraph/Qt**
@@ -404,6 +425,12 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   (`lambda_scales_box_size` opts into the full similarity transform). Rescaling is
   always derived from `Session.base_boxes` at `Session.base_lambda`, never from its own
   last output, so it round-trips exactly; a direct box edit `rebase()`s that reference.
+  Boxes left of Bregma are scaled as the negated reflection of the same box on the
+  right, so a bilateral pair stays mirrored at every factor — no rounding rule can
+  guarantee that on its own, since the mirror needs both oddness and translation
+  invariance and those contradict at a tie. The **mirror lock** (`m`, on by default)
+  applies the same guarantee to hand edits: touching one box of an L/R pair rewrites
+  its twin as the exact reflection.
   The file is an atlas file plus `bregma_row` / `bregma_col` / `lambda_row_offset`, so
   `wfci.load_atlas` reads it unchanged; `roi_editor.load_roi_set` returns
   `(atlas, bregma_row, bregma_col)` and the Lambda distance is read separately by

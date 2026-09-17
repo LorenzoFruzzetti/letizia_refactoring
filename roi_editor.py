@@ -130,7 +130,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import numpy as np
 import tifffile
@@ -192,6 +192,13 @@ RUN_CONFIG: dict[str, Any] = {
     # a group. True is the true similarity transform: use it when the boxes are meant
     # to cover a fixed fraction of each animal's cortex rather than a fixed area.
     "lambda_scales_box_size": False,
+    # True (default): editing one box of a bilateral pair moves its twin to the exact
+    # mirror image, so a layout cannot leave the editor asymmetric. Every ROI set drawn
+    # before this lock existed lost its mirror symmetry on V1 and M2 by 2-3 px, always
+    # on one hemisphere, and 'c' then propagated the slip to every later page.
+    # Turn it off ('m' in the window, or --no-mirror-lock) only to draw a deliberately
+    # one-sided layout.
+    "mirror_lock": True,
     # Where ROI sets are WRITTEN (and, unless roi_seed_dir is set, also read from).
     "roi_set_dir": r"roi_sets",
     # Optional read-only directory of starting layouts. When set, a page with no saved
@@ -248,6 +255,8 @@ HELP = (
     "arrows / shift+arrows to nudge 1 / 5 px\n"
     "+ / -: grow / shrink box    "
     "[ / ]: contrast    r: reset page\n"
+    "MIRROR LOCK (on): editing one box of an L/R pair mirrors its twin about Bregma"
+    "    m: toggle it off for a one-sided edit\n"
     "n / p: next / prev session    c: copy the PREVIOUS page's layout onto this one\n"
     "s: save this session    S: save all    ctrl+s: save only the modified ones    "
     "w: write SHARED set\n"
@@ -406,6 +415,48 @@ def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
 
 
+def round_half_away(value: float) -> int:
+    """Round to nearest, ties away from zero.
+
+    Odd -- ``f(-x) == -f(x)`` -- so the two hemispheres round the same way, which
+    Python's half-to-even ``round`` is too (``round(0.5) == 0`` but ``round(-0.5)``
+    is also ``0``... as ``-0``; the failure is elsewhere). It is translation
+    invariant, ``f(x + n) == f(x) + n``, everywhere EXCEPT across a sign change at a
+    tie, and no rounding rule can have both properties at once -- see
+    :func:`scale_boxes`, which is why that function reflects explicitly rather than
+    relying on either.
+    """
+    return int(math.floor(value + 0.5)) if value >= 0 else -int(math.floor(-value + 0.5))
+
+
+def mirror_box(box: Box) -> Box:
+    """``box`` reflected across the midline that runs through Bregma.
+
+    Offsets are measured from Bregma, so the reflection is just a negate-and-swap of
+    the column pair; the rows are untouched because the midline is vertical.
+    """
+    return Box(row_start=box.row_start, row_end=box.row_end,
+               col_start=-box.col_end, col_end=-box.col_start)
+
+
+def mirror_twin(label: str, labels: Iterable[str]) -> str | None:
+    """The bilateral counterpart of ``label``, or None when it has none.
+
+    The side letter is the first ``L``/``R`` whose swap names another box in the same
+    atlas: ``M2L_alta -> M2R_alta``, ``FLL -> FLR``, ``RSL_alta -> RSR_alta``. Asking
+    for a real label rather than assuming a position is what keeps ``RSL_alta``'s
+    leading ``R`` from being read as the side (``LSL_alta`` is not a box).
+    """
+    labels = set(labels)
+    for i, ch in enumerate(label):
+        if ch not in "LR":
+            continue
+        twin = label[:i] + ("R" if ch == "L" else "L") + label[i + 1:]
+        if twin in labels:
+            return twin
+    return None
+
+
 def scale_boxes(boxes: dict[str, Box], factor: float,
                 scale_size: bool = False) -> dict[str, Box]:
     """Scale every box's offsets about Bregma by ``factor``.
@@ -422,24 +473,47 @@ def scale_boxes(boxes: dict[str, Box], factor: float,
     similarity transform, for when the boxes are meant to cover a fixed *fraction*
     of cortex instead.
 
-    Rounding is Python's round-half-to-even, which is symmetric about zero: a
-    mirrored left/right pair scales to a still-mirrored pair, so the atlas cannot
-    quietly lose its symmetry at a half-pixel. ``factor == 1.0`` is exactly the
-    identity (every centre is an integer or a half-integer, both exact in binary),
-    so a no-op Lambda change moves nothing.
+    A mirrored left/right pair must scale to a still-mirrored pair, or the atlas
+    quietly loses its symmetry at a half-pixel and every left-vs-right contrast drawn
+    from it is confounded. NO rounding rule delivers that on its own. The mirror needs
+    ``f(-x) == -f(x)`` (the hemispheres must round the same way) *and*
+    ``f(x + n) == f(x) + n`` for integer ``n`` (the half-span shift that turns a centre
+    into an edge must not move one side and not the other), and the two are
+    contradictory at a tie: oddness gives ``f(-0.5) == -f(0.5)``, translation gives
+    ``f(-0.5) == f(0.5) - 1``, so ``f(0.5)`` would have to be ``0.5``. Half-to-even
+    fails the second (``round(5.5) - round(0.5) == 6``); ties-away fails it across zero
+    (``round_half_away(4.5) - 5 == 0`` but ``round_half_away(-0.5) == -1``).
+
+    So the reflection is done rather than hoped for: a box on the LEFT of Bregma (a
+    negative column centre) is computed as the exact mirror of the same box reflected
+    onto the right, ``-(right_edge)``. Whatever the rounding does, it does the same
+    thing to both hemispheres, at every factor and every span. Rows are rounded
+    plainly -- the midline is vertical, so rows carry no reflection, and bilateral
+    twins hold identical row offsets and therefore scale identically anyway.
+
+    ``factor == 1.0`` is exactly the identity (every centre is an integer or a
+    half-integer, both exact in binary), so a no-op Lambda change moves nothing.
     """
     scaled: dict[str, Box] = {}
     for label, box in boxes.items():
         if scale_size:
-            r0, r1 = int(round(box.row_start * factor)), int(round(box.row_end * factor))
-            c0, c1 = int(round(box.col_start * factor)), int(round(box.col_end * factor))
+            r0, r1 = (round_half_away(box.row_start * factor),
+                      round_half_away(box.row_end * factor))
+            c0, c1 = (round_half_away(box.col_start * factor),
+                      round_half_away(box.col_end * factor))
             # Shrinking must not invert a box: Box requires end >= start.
             scaled[label] = Box(r0, max(r0, r1), c0, max(c0, c1))
             continue
         span_r = box.row_end - box.row_start
         span_c = box.col_end - box.col_start
-        r0 = int(round((box.row_start + box.row_end) / 2 * factor - span_r / 2))
-        c0 = int(round((box.col_start + box.col_end) / 2 * factor - span_c / 2))
+        r0 = round_half_away((box.row_start + box.row_end) / 2 * factor - span_r / 2)
+        centre_c = (box.col_start + box.col_end) / 2 * factor
+        if centre_c >= 0:
+            c0 = round_half_away(centre_c - span_c / 2)
+        else:
+            # Reflect the right-hand box and negate, so the pair is mirrored by
+            # construction instead of by a property no rounding rule actually has.
+            c0 = -(round_half_away(-centre_c - span_c / 2) + span_c)
         scaled[label] = Box(r0, r0 + span_r, c0, c0 + span_c)
     return scaled
 
@@ -730,6 +804,10 @@ class ROIEditor:
         self.profile_name = profile_name
         self.index = 0
         self.selected: str | None = None
+        # Editing one box of a bilateral pair rewrites its twin as the exact mirror.
+        # Defaulted here as well as in RUN_CONFIG so a caller that builds `args` by
+        # hand gets the safe behaviour rather than the historical one.
+        self.mirror_lock = bool(getattr(args, "mirror_lock", True))
         self.clip = [1.0, 99.5]      # display percentiles
         self.message = ""
         # Pages already shown this run -- the first visit to a page carries the
@@ -1105,6 +1183,24 @@ class ROIEditor:
         self.lambda_target.setPos(session.x_2 - 0.5, lambda_y)
         self.axis_line.setData([session.x_2 - 0.5] * 2, [bregma_y, lambda_y])
 
+    def _sync_one(self, label: str) -> None:
+        """Push ONE box back onto its rect, without touching the others.
+
+        Used while a box is being dragged: the dragged rect is already where the mouse
+        put it, and re-setting it mid-drag would fight the drag. Its mirrored twin,
+        though, was changed by us and has to be moved.
+        """
+        session = self.session
+        r0, r1, c0, c1 = pixel_bounds(session.boxes[label], session.y_1, session.x_2)
+        roi = self._rois[label]
+        self._syncing = True
+        try:
+            roi.setPos(c0, r0, finish=False)
+            roi.setSize((c1 - c0 + 1, r1 - r0 + 1), finish=False)
+        finally:
+            self._syncing = False
+        self._restyle()
+
     def _sync_boxes(self) -> None:
         """Push ``session.boxes`` + both landmarks back onto the existing items.
 
@@ -1202,10 +1298,18 @@ class ROIEditor:
         # A hand-placed box is the new truth at this Lambda distance, so it becomes
         # part of the reference the next rescale derives from -- otherwise the very
         # next Lambda nudge would throw the adjustment away.
+        twin = self._mirror_to_twin(label)
         session.rebase()
         session.dirty = True
         self.selected = label
-        self._restyle()
+        if twin:
+            # Only the twin: the dragged rect is already where the mouse left it, and
+            # re-setting it here would fight the drag. _restyle only recolours, so the
+            # twin's rect would otherwise stay behind its box.
+            self.say(f"{label} moved, {twin} mirrored with it (m unlocks the pair)")
+            self._sync_one(twin)
+        else:
+            self._restyle()
 
     def _on_scene_clicked(self, event) -> None:
         """Double-click on the image: put Bregma there, boxes follow."""
@@ -1244,6 +1348,27 @@ class ROIEditor:
         self._set_lambda(int(round(pos.y() + 0.5)) - self.session.y_1)
 
     # -- edits ---------------------------------------------------------------
+    def _mirror_to_twin(self, label: str) -> str | None:
+        """Rewrite ``label``'s bilateral twin as its exact mirror. Returns the twin.
+
+        Called after every edit that touches ONE box -- keyboard nudge, resize, mouse
+        drag, handle drag -- so the pair cannot come apart in the first place. Copying
+        the whole mirrored box rather than applying the mirrored *delta* is deliberate:
+        it makes the twin exact regardless of how the edit was expressed, and it also
+        repairs a pair that was already off.
+
+        The twin is not clamped to the frame. A box pushed off it turns red and blocks
+        the save, which is the same visible refusal an off-frame drag already gets --
+        better than silently squashing the twin and breaking the symmetry to fit.
+        """
+        if not self.mirror_lock:
+            return None
+        twin = mirror_twin(label, self.session.boxes)
+        if twin is None:
+            return None
+        self.session.boxes[twin] = mirror_box(self.session.boxes[label])
+        return twin
+
     def _nudge_box(self, dr: int, dc: int) -> None:
         if self.selected is None:
             self.say("No ROI selected -- click one first.")
@@ -1255,8 +1380,12 @@ class ROIEditor:
         dc = _clamp(dc, -c0, cols - 1 - c1)
         session.boxes[self.selected] = box_from_pixels(
             r0 + dr, r1 + dr, c0 + dc, c1 + dc, session.y_1, session.x_2)
+        twin = self._mirror_to_twin(self.selected)
         session.rebase()             # see _on_roi_changed
         session.dirty = True
+        if twin:
+            self.say(f"{self.selected} moved, {twin} mirrored with it "
+                     f"(m unlocks the pair)")
         self._sync_boxes()
 
     def _resize_box(self, delta: int) -> None:
@@ -1274,8 +1403,12 @@ class ROIEditor:
             return
         session.boxes[self.selected] = box_from_pixels(r0, r1, c0, c1,
                                                       session.y_1, session.x_2)
+        twin = self._mirror_to_twin(self.selected)
         session.rebase()             # see _on_roi_changed
         session.dirty = True
+        if twin:
+            self.say(f"{self.selected} resized, {twin} mirrored with it "
+                     f"(m unlocks the pair)")
         self._sync_boxes()
 
     def _rotate_constellation(self, degrees: float) -> None:
@@ -1611,6 +1744,15 @@ class ROIEditor:
             self._rotate_constellation((-step if key == Qt.Key_Z else step))
             return
 
+        if key == Qt.Key_M:
+            self.mirror_lock = not self.mirror_lock
+            self.say("Mirror lock ON -- editing one box of an L/R pair now mirrors "
+                     "its twin about Bregma."
+                     if self.mirror_lock else
+                     "Mirror lock OFF -- boxes move independently. Anything you edit "
+                     "one-sided from here stays asymmetric, and 'c' carries it forward.")
+            return
+
         if key == Qt.Key_F:
             self._flip_constellation(horizontal=True)
             return
@@ -1728,6 +1870,11 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     p.add_argument("--lambda-scales-box-size", action="store_true",
                    default=defaults["lambda_scales_box_size"],
                    help="Rescaling also scales each box's size, not just its position.")
+    p.add_argument("--no-mirror-lock", dest="mirror_lock", action="store_false",
+                   default=defaults["mirror_lock"],
+                   help="Let one box of a bilateral pair be edited without its twin "
+                        "following. On by default: an asymmetric pair is almost always "
+                        "a slip, not a decision.")
     p.add_argument("--no-load-existing", dest="load_existing", action="store_false",
                    default=defaults["load_existing"],
                    help="Ignore ROI sets already in --roi-set-dir.")
@@ -1759,6 +1906,7 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         bregma_col=config["bregma_col"],
         lambda_offset=config["lambda_offset"],
         lambda_scales_box_size=bool(config["lambda_scales_box_size"]),
+        mirror_lock=bool(config["mirror_lock"]),
         roi_set_dir=config["roi_set_dir"],
         roi_seed_dir=config["roi_seed_dir"],
         shared_name=config["shared_name"],
@@ -1788,6 +1936,8 @@ def main() -> None:
         print(f"Seeded from: {args.roi_seed_dir}  (read-only reference layouts)")
     print(f"Lambda    : {args.lambda_offset} px below Bregma (scale reference; "
           f"box sizes {'scale too' if args.lambda_scales_box_size else 'stay fixed'})")
+    lock = "LOCKED (m unlocks)" if getattr(args, "mirror_lock", True) else "UNLOCKED (m locks)"
+    print(f"Mirror    : {lock} -- editing one box of an L/R pair mirrors its twin")
     if getattr(args, "image_dir", None):
         print(f"Images    : {args.image_dir} (pre-computed anatomy previews)")
         sessions = sessions_from_images(args, default_boxes)

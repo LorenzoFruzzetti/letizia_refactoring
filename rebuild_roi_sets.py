@@ -19,17 +19,24 @@ There are two distinct causes, and they need different fixes.
    translation invariance is.  A box of span 5 puts its edge at ``centre*f - 2.5``, so
    mirroring requires ``round(u + 2.5) == round(u - 2.5) + 5``.  Half-to-even fails
    that whenever ``u = |centre| * f`` lands on an integer: round(5.5) = 6 but
-   round(0.5) = 0, a gap of 6, so the pair comes out 1 px off-centre.  Round-half-away-
-   from-zero satisfies both f(-x) = -f(x) and f(x+n) = f(x)+n for integer n, so it is
-   mirror-exact; this script uses it (``scale_boxes_mirrored`` below) and diverges from
-   ``roi_editor.scale_boxes`` by at most 1 px, on exactly the cases that break.
+   round(0.5) = 0, a gap of 6, so the pair comes out 1 px off-centre.
+
+   No rounding rule fixes this.  The mirror needs oddness AND translation invariance,
+   and at a tie the two contradict each other (oddness gives f(-0.5) = -f(0.5),
+   translation gives f(-0.5) = f(0.5) - 1, so f(0.5) would have to be 0.5).  Ties-away
+   merely moves the failure to pairs that straddle zero.  ``roi_editor.scale_boxes``
+   therefore REFLECTS: a box left of Bregma is computed as the negated mirror of the
+   same box on the right, so the pair is symmetric by construction at every factor.
+   Newly drawn sets no longer acquire this error, and the rebuild only repairs old ones.
 
 2. V1's -2..+6 px error is too large for that and drifts monotonically with acquisition
    date, so it is a genuine one-hemisphere hand nudge.  Because ``c`` copies the
    previous page's layout forward, a nudge propagates to every later session and
    accumulates.  A left-vs-right V1 contrast on the current sets is confounded, and
    since the drift tracks date it is confounded with group if groups were run in date
-   blocks.
+   blocks.  The editor's mirror lock (``roi_editor.ROIEditor._mirror_to_twin``, on by
+   default) is what stops this one recurring: an edit to either box of a pair rewrites
+   the other as its exact mirror.
 
 Bilateral row alignment, box sizes, antero-posterior and medio-lateral ordering,
 co-alignment equalities, disjointness and hemisphere sidedness are clean in all 356
@@ -66,7 +73,6 @@ Run it:
 from __future__ import annotations
 
 import argparse
-import math
 import re
 import sys
 from collections import Counter, defaultdict
@@ -75,7 +81,7 @@ from typing import Any
 
 import yaml
 
-from roi_editor import Box, save_roi_set
+from roi_editor import Box, mirror_twin, save_roi_set, scale_boxes
 from wfci import load_atlas
 
 # ---------------------------------------------------------------------------
@@ -142,41 +148,17 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
     )
 
 
-def round_half_away(value: float) -> int:
-    """Round to nearest, ties away from zero.
-
-    The rounding the mirror needs.  It satisfies both ``f(-x) == -f(x)`` (so the two
-    hemispheres round the same way) and ``f(x + n) == f(x) + n`` for integer ``n`` (so
-    the half-span shift that turns a centre into an edge cannot move one side and not
-    the other).  ``round()``'s half-to-even has the first property but not the second,
-    which is why it can put a mirrored pair 1 px off-centre -- see the module docstring.
-    """
-    return int(math.floor(value + 0.5)) if value >= 0 else -int(math.floor(-value + 0.5))
-
-
 def scale_boxes_mirrored(boxes: dict[str, Box], factor: float,
                          scale_size: bool = False) -> dict[str, Box]:
-    """``roi_editor.scale_boxes`` with mirror-exact rounding.
+    """The editor's rescale, kept under the name this script's guarantee is stated in.
 
-    Same contract otherwise: offsets are measured from Bregma, so multiplying them
-    scales the constellation about Bregma without moving it.  ``scale_size=False``
-    scales each box's centre and keeps its width and height, holding the pixel count
-    behind every ROI mean fixed so noise stays comparable across animals.
+    It used to be a corrected COPY of ``roi_editor.scale_boxes``, which rounded
+    half-to-even and so could put a mirrored pair 1 px off-centre.  The editor now
+    rounds with :func:`roi_editor.round_half_away` itself, so the two are the same
+    function and this only forwards -- the per-file assertion in :func:`main` still
+    checks the result, so a regression there cannot pass unnoticed.
     """
-    scaled: dict[str, Box] = {}
-    for label, box in boxes.items():
-        if scale_size:
-            r0, r1 = round_half_away(box.row_start * factor), round_half_away(box.row_end * factor)
-            c0, c1 = round_half_away(box.col_start * factor), round_half_away(box.col_end * factor)
-            # Shrinking must not invert a box: Box requires end >= start.
-            scaled[label] = Box(r0, max(r0, r1), c0, max(c0, c1))
-            continue
-        span_r = box.row_end - box.row_start
-        span_c = box.col_end - box.col_start
-        r0 = round_half_away((box.row_start + box.row_end) / 2 * factor - span_r / 2)
-        c0 = round_half_away((box.col_start + box.col_end) / 2 * factor - span_c / 2)
-        scaled[label] = Box(r0, r0 + span_r, c0, c0 + span_c)
-    return scaled
+    return scale_boxes(boxes, factor, scale_size)
 
 
 def read_header(path: Path) -> dict[str, Any]:
@@ -207,17 +189,19 @@ def mirror_error(boxes: dict[str, Any], pairs: list[tuple[str, str, str]]) -> in
 
 
 def bilateral_pairs(labels: list[str]) -> list[tuple[str, str, str]]:
-    """Pair each ``*L*`` label with its ``*R*`` twin: ('M2_alta', 'M2L_alta', 'M2R_alta')."""
+    """Pair each ``*L*`` label with its ``*R*`` twin: ('M2_alta', 'M2L_alta', 'M2R_alta').
+
+    ``roi_editor.mirror_twin`` finds the side letter; this only keeps the L-side
+    listing so each pair is reported once, under a side-less region name.
+    """
     pairs = []
     for label in labels:
-        # The side letter is the first L that has an R-twin when swapped.
-        for i, ch in enumerate(label):
-            if ch != "L":
-                continue
-            twin = label[:i] + "R" + label[i + 1:]
-            if twin in labels:
-                pairs.append((label[:i] + label[i + 1:], label, twin))
-                break
+        twin = mirror_twin(label, labels)
+        if twin is None:
+            continue
+        i = next(k for k, (a, b) in enumerate(zip(label, twin)) if a != b)
+        if label[i] == "L":
+            pairs.append((label[:i] + label[i + 1:], label, twin))
     return pairs
 
 

@@ -169,7 +169,70 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
 - Ensure all required directories exist.
 - Add a minimal runnable example for each major project part in examples/, and document each example input/output in README.
 
-## 6. Update
+
+## 6. Test scripts
+
+Test scripts are small, self-contained analysis scripts that load one dataset,
+compute something from it, and save plots. They are read and edited by hand much
+more often than they are reused, so favour clarity over abstraction.
+
+### Structure
+
+Flat, top-to-bottom procedural code, in this order:
+
+1. **Imports** — standard library first, then third-party.
+2. **Parameters** — every value someone might want to change, in one block
+   directly after the imports.
+3. **Loading** — read the input data.
+4. **Computation** — one commented block per step.
+5. **Plotting and saving** — build the figure, save it, close it.
+
+No `main()`, no `argparse`, no classes. Only add a helper function when the same
+logic is needed in three or more places or for ease of understanding with a descriptive name.
+
+### Parameters
+
+- All parameters live at the top. Nothing configurable appears further down the
+  file — if a magic number shows up in the computation section, move it up.
+- Plain module-level variables, `lower_snake_case`, units in the name
+  (`sampling_rate_hz`, `window_duration_s`) or in a trailing comment.
+- Prefer physical quantities and derive the index-space values from them, so the
+  relationship is explicit:
+
+```python
+  sampling_rate_hz = 10
+  window_duration_s = 1.0
+  n_dt = int(window_duration_s * sampling_rate_hz)  # rows per window
+```
+
+- Any parameter whose meaning isn't obvious from its name gets a one-line
+  comment, e.g. `starting_column = 2  # first 2 columns (trial, frame) are metadata`.
+- Paths are `pathlib.Path`, never strings. The output directory is derived from
+  the input path and created with `mkdir(parents=True, exist_ok=True)`.
+
+### Body
+
+- Each computation block opens with a short comment saying what it produces in
+  plain language, not a restatement of the code.
+- Annotate the shape of every non-trivial array where it is created, using the
+  parameter names: `# windows: (n_columns, n_dt, n_windows)`.
+- Spell variable names out (`window_center_frame`, not `wcf`). Single letters
+  only for loop indices, and prefer `i_row` / `i_col` over `i` / `j`.
+- Keep intermediate results in named variables rather than chaining long
+  expressions.
+
+### Plots
+
+- One figure per script section; use `constrained_layout=True` and
+  `squeeze=False` when subplotting.
+- Row and column labels come from the data (column names, feature names), not
+  hardcoded strings.
+- Save with `fig.savefig(output_dir / "<descriptive_name>.png", dpi=200)` and
+  always follow with `plt.close(fig)`.
+- Titles state the parameters that produced the result, e.g.
+  `f"Window features ({window_duration_s:g} s window)"`.
+
+## 7. Update
 When an issuse related to this project is found update with other points the
 CLAUDE.md file
 
@@ -186,10 +249,19 @@ fails that whenever `u = |centre| * factor` lands on an integer: `round(5.5) == 
 **Effect.** Silent 1-px left/right asymmetry from a pure Lambda rescale. In `roi_sets/`
 it hit HL in 294/356 files and M2_alta in 230/356, always +1 px.
 
-**Fix applied.** `rebuild_roi_sets.py` uses `round_half_away()` (ties away from zero),
-which satisfies both `f(-x) == -f(x)` and `f(x+n) == f(x)+n`, so it is mirror-exact.
+**Fix applied.** `rebuild_roi_sets.py` uses `round_half_away()` (ties away from zero).
 `roi_editor.scale_boxes` itself is unchanged — fixing it in place would move boxes in
 already-saved sets. Regenerate through `rebuild_roi_sets.py` instead.
+
+**Correction (2026-09-10, see 9.20).** The claim above that ties-away "satisfies both
+`f(-x) == -f(x)` and `f(x+n) == f(x)+n`, so it is mirror-exact" is FALSE, and so is
+the reasoning that led to it. No rounding rule has both properties: oddness forces
+`f(-0.5) == -f(0.5)`, translation forces `f(-0.5) == f(0.5) - 1`, so `f(0.5)` would
+have to be `0.5`. Ties-away only moves the failure to pairs straddling zero
+(`round_half_away(-0.5) == -1` but `round_half_away(4.5) - 5 == 0`). It happens to be
+exact on every real scale factor in `roi_sets/`, which is why the per-file assertion
+never fired, but it is not exact in general. `scale_boxes` now reflects explicitly
+instead. Every one of the 546 rebuilt sets is byte-identical either way.
 
 ### 9.2 Baseline atlas declares `lambda_row_offset: 30` but is used at 55
 **Problem.** `roi_sets/cortex22_roi_set.yaml` declares `lambda_row_offset: 30`, but
@@ -625,3 +697,200 @@ Audited afterwards, not just counted:
 - On 8 recordings sampled across days, animals and groups, reducing the dumped
   pixels over the ROI boxes reproduces each one's `roi_fluorescence_full.csv`
   to a worst 1.13e-3 pp (0.069% of one sd) -- the float16 cost, nothing more.
+
+### 9.20 The new cohort repeated 9.1 and 9.3 exactly; both are now fixed at source
+**What happened (2026-09-10).** 190 ROI sets for 38 new animal-sessions (dates
+260807-260909) were drawn through `batch_roi_select.py` into `roi_sets/reviewed/`.
+They came out with the same two defects as the original 356, in the same regions:
+
+| region | files off | error |
+|---|---|---|
+| V1 | 174/190 | +1, +2, +3 px |
+| M2_alta | 165/190 | +1, +2 px |
+| M2_bassa, HL, RS_alta | 10/190 each | +1 px |
+
+The 1 px entries are 9.1's rounding tie. The 2-3 px entries are 9.3's one-hemisphere
+hand nudge, identical across all five `t#` of a session because `c` carries a layout
+forward. Row alignment was clean everywhere. Six files also disagreed with their own
+session's Bregma; `260828_PV7_t1` still held the RUN_CONFIG fallback 120/134 while its
+four siblings sat at 86/132, i.e. it was saved before Bregma was ever placed.
+
+**Rebuilt.** `rebuild_roi_sets.py --roi-set-dir roi_sets/reviewed --out-dir
+roi_sets/rebuilt` wrote all 190 alongside the existing 356 (no key collides; the old
+files were checksummed before and after and are untouched). `roi_sets/rebuilt` now
+holds 546 sets, scale 0.782x-0.964x for the new cohort, 589 px of asymmetry removed,
+and all 546 pass the mirror, row-alignment, box-size, ordering and grid checks with
+t1-t5 identical within every animal. `run_botox_batch.py` picks the new ones up with
+no flag change.
+
+**Fixed at source, so the next cohort does not need this.**
+1. `roi_editor.scale_boxes` no longer relies on a rounding rule to carry the mirror.
+   A box left of Bregma is computed as the negated reflection of the same box on the
+   right, so a pair is symmetric by construction at any factor and any span. See the
+   correction in 9.1 for why no rounding rule can do this. `round_half_away` moved into
+   `roi_editor.py` and `rebuild_roi_sets.scale_boxes_mirrored` now just forwards, so
+   there is one implementation. Verified: all 546 rebuilt sets regenerate byte-identical.
+2. **Mirror lock** (`ROIEditor._mirror_to_twin`, `RUN_CONFIG["mirror_lock"] = True`,
+   `m` toggles, `--no-mirror-lock` opts out). Every one-box edit — mouse drag, corner
+   resize, arrow nudge, `+`/`-` — rewrites the bilateral twin as the exact reflection.
+   It writes the mirrored BOX, not a mirrored delta, so one edit also repairs a pair
+   that was already crooked. The twin is not clamped: if mirroring pushes it off the
+   frame it turns red and blocks the save, the same visible refusal an off-frame drag
+   gets, because silently squashing the twin is the one outcome worse than a refusal.
+
+`mirror_twin` reads the side letter as the first `L`/`R` whose swap names another box
+in the same atlas, so `RSL_alta`'s leading `R` is not mistaken for the side.
+
+**Not done, offered and declined for now:** a save-time refusal on a broken mirror,
+and save-time warnings for a still-default Bregma or geometry disagreeing with an
+already-saved sibling `t#`. Those would have caught the six header slips above, which
+right now only `rebuild_roi_sets.py`'s majority normalisation repairs.
+
+**Watch out.** `rebuild_roi_sets.py` RUN_CONFIG still defaults to `roi_set_dir:
+roi_sets` and `out_dir: roi_sets/rebuilt`. Run it with no flags and it rebuilds the
+ORIGINAL hand-drawn cohort, not whatever `batch_roi_select.py` last wrote. Pass
+`--roi-set-dir` explicitly.
+
+Tests: 248 passed, 3 skipped. New coverage in `tests/test_roi_editor.py` for the
+impossibility of the rounding rule, mirror-exactness of `scale_boxes` across factors,
+mirror symmetry over the editor's whole Lambda range, `mirror_twin`'s side-letter
+rule, and the lock on the nudge, resize and mouse-drag paths plus its repair
+behaviour and its `m` toggle.
+
+### 9.21 `--all-rois` silently replaced four atlas boxes with non-mirrored ones
+**Problem.** `epileptic_by_area_animal_day_pixels.py` built its ROI set as
+`boxes = dict(atlas["boxes"]); boxes.update(CUSTOM_BOXES)`. The four custom boxes
+are named `M2R_alta`, `M2R_bassa`, `M1R_alta`, `M1R_bassa` -- the SAME names the
+cortex22 atlas uses -- so with `--all-rois` they did not add anything, they
+overwrote the atlas's own versions. The custom offsets differ from the atlas ones
+(`M2R_alta` -23..-18 / 8..13 vs the atlas's -25..-20 / 9..14), and they are fixed
+Bregma-relative constants rather than reflections of `M2L_alta`, so 4 of the 22
+ROIs came out NOT mirror-symmetric with their left twins. Exactly the class of
+defect 9.1/9.3/9.20 are about, reintroduced downstream of the fixed editor.
+
+**Effect.** Any left-vs-right contrast on an `--all-rois` run was confounded for
+M1R/M2R, with nothing in the output saying so -- the column names are the atlas's.
+
+**Fix applied (2026-09-16).** The two box sources are now independent:
+`--all-rois` is the atlas as drawn, `--custom-boxes` is the four hand boxes, and
+`use_custom_boxes` defaults the latter to ON only when `--all-rois` is OFF (the
+old single-purpose behaviour). `resolve_boxes` raises if both are off. The
+provenance JSON records `custom_boxes: null` when they were not used.
+
+### 9.22 Median-baseline dF/F for the pixel detector, and what it costs
+**Added (2026-09-16).** `--signal-mode median_dff` (now the default) computes
+`(F/Fbar)/(R/Rbar) - 1` per saved pixel and then the spatial ROI mean, where
+Fbar/Rbar are each pixel's CENTRED RUNNING MEDIAN over
+`--baseline-median-window-s` (20 s = 201 frames at 10 Hz), not the
+whole-recording mean `wfci.correction.hemodynamic_correction` uses. The old
+`F * mean_t(R) / R` is `--signal-mode reflectance_ratio`, unchanged and verified
+bit-identical. Result is a RATIO, not a percent; x100 gives run_botox_batch's %.
+The scale is irrelevant to detection -- every threshold downstream is in robust
+SDs of the trace itself.
+
+**Verified numerically, not just by eye.** Against a brute-force per-pixel median
+(`np.median` over each window, partial windows at the ends) on four real ROIs of
+`260611/PV5/t1`: max abs error **9.99e-17**. `pandas.rolling(center=True,
+min_periods=1).median()` is the implementation, matching `remove_slow_trend`'s
+edge convention. Cost is ~1.8 s per recording for 22 boxes x 2 channels, i.e.
+not the bottleneck.
+
+**THE SIGNAL IS NOW HIGH-PASSED TWICE.** The per-pixel 20 s median baseline
+removes slow drift BEFORE the ROI average; the detector then subtracts its own
+20 s running median (`--median-window-s`) AFTER it. The two act on different
+quantities so it is not literally redundant, but anyone comparing amplitudes with
+a `reflectance_ratio` run must know it. Raise `--median-window-s` or switch modes
+to get one stage only.
+
+**Output tree is named for the mode** (`outputs/epileptic_by_area_animal_day_
+pixels_median_dff/`). The per-recording file names are shared between modes, so a
+single tree would have had one mode overwrite the other's tables and figures. The
+trace CSV is also named per mode (`roi_median_dff.csv` vs
+`roi_reflectance_corrected_fluorescence.csv`), which is what lets
+`plot_pixel_detection_comparisons.py` and `plot_pixel_peak_zooms.py` keep reading
+the older `outputs/epileptic_by_area_animal_day_pixels/` untouched.
+
+**Per-recording figures are now drawn for EVERY recording** (`debug_plot_count:
+None` / `--debug-plot-count all`), and there is a new one:
+`epileptic_diagnostics.plot_roi_overview` -> `roi_traces_all.png`, all 22 ROIs
+overlaid over the whole recording, the counterpart of run_botox_batch's
+`roi_traces_full.png`. Cost 6.3 MB per recording, 3.4 GB for the cohort.
+
+**Full run (545 recordings, 109 day+animal units, all 22 atlas ROIs).** 18.5 min
+detection + ~16 min figures. Cut-off `z >= 3.37` over 35,610,300 pooled frames
+(achieved 1.004%); 18,633 epileptiform events of 220,188 peaks (110,055
+confirmed). Audited afterwards, not just counted: 545/545 have all six expected
+files; one single ROI column set (22) across both cohorts; every
+`roi_geometry.json` names its OWN `roi_sets/rebuilt/<day>_<animal>_<t#>.yaml`
+with **72 distinct absolute Bregmas**, so 9.4's shared-fallback bug is not back.
+
+**Watch out.** `bregma_crop_zero_based` is IDENTICAL on all 545 and that is
+correct, not a fallback symptom: the saved crop window is itself Bregma-relative
+(9.15), so Bregma sits at the same place inside every crop by construction. Check
+`y_1`/`x_2` (absolute, on the full grid) when auditing for 9.4.
+
+### 9.23 Median dF/F cache: one reflectance glitch frame, and the active-pixel scale trap
+**Cache built (2026-09-16).** `cache_median_dff.py` wrote
+`pixel_data/*/*/pixels_median_dff_20s_full.npy` for all 545 dumps: 20.1 min on 8
+workers, 21.48 GB, all `(2980, 76, 87)` float16, 545 meta markers, no `.partial`
+leftovers. Averaging the cached volume over each of the 22 boxes reproduces
+`median_dff_roi_trace` with difference 0. Parallel scaling measured here: 1 worker
+107 min, 4 -> 29, 8 -> 21, 12 -> 17, 20 -> 13, ~1.1 GB RAM per worker. The pool is
+`multiprocessing.Pool` (context exit terminates workers, so 9.10's trap does not
+apply) and the job does no BLAS work, so 9.11/9.12 did not recur.
+
+**Glitch frame.** `260828_PV7/t2` frame 1809: the reflectance channel drops
+field-wide from ~45,500 to ~3,900 (about the GCaMP level) for ONE frame, so
+dF/F there reaches 10.8 and the field median is 1.4. It is the only such frame in
+all 545 recordings (next-worst recording's field median max 0.08 in the 99th
+percentile). It is also why the cache's worst float16 error is 1.95e-3 instead of
+the typical 6e-5 (float16 error scales with the value). The cache is NOT
+corrected: any detector run on this recording sees a fake whole-cortex event at
+180.9 s. `epileptic_by_active_pixels.py` therefore excludes the whole recording by
+default (`exclude_recordings` / `--exclude-recordings`); the ROI-mean scripts
+(`epileptic_by_area_animal_day*.py`) still include it.
+
+**Active-pixel scale trap.** `epileptic_by_active_pixels.py` counts pixels above a
+per-pixel robust-z threshold. Active pixels are spatially correlated, so at high
+thresholds the fraction is exactly 0 in most frames, its MAD is 0 and
+`run_analysis` has no scale: at 3 SD the run stops with "No finite, non-flat ROI
+frames available for calibration". Measured on 8 recordings of the median dF/F:
+3 SD -> 0 in 77-92% of frames, robust SD 0; 2.5 SD -> robust SD 0.001-0.004,
+below one pixel of ~396 (0.0025); 2 SD -> 0.008-0.020; 1.5 SD -> 0.034-0.058.
+On `pixels_dff_full.npy` (mean baseline) the usable range is lower still (<= 1 SD).
+The default is therefore 1.5 SD.
+
+**Bottom-percentile scale (added 2026-09-17).** `--pixel-scale bottom_percentile`
+uses the plain SD of each pixel's values at or below its
+`--pixel-scale-percentile` (default 50). That is a truncated-distribution SD:
+measured 0.58-0.61x the MAD SD on 8 recordings (Gaussian: 0.60x), so thresholds
+are NOT comparable between the two scales -- 2 bottom-50% SDs ~ 1.2 robust SDs.
+Same trap as above, shifted: at 2.0 the fraction's robust SD is 0.007-0.075, at
+2.5 some recordings already give 0. Its outputs go to a `_bottom<N>sd` folder.
+
+**Watch out.** `median_dff_volume` divides in place; it must take `np.array`
+copies, not `np.asarray` — with float64 input `asarray` returns the caller's own
+array and the division overwrote it (caught by `tests/test_active_pixels.py`;
+the float32 dumps always forced a copy, so the built cache is unaffected).
+
+### 9.24 The pooled cut-off silently saturated at the top of `z_histogram_range`
+**Problem (2026-09-17).** `run_analysis` clips every frame z into the histogram
+range, so frames above the top edge pile into the last bin. When more than
+`calibration_frame_percent` of frames sit there, the "top 1%" cut-off comes out
+as the range's edge instead. The active-pixel fraction has a tiny robust SD, so
+its z values are huge: at a 2 SD pixel threshold, 16 recordings gave
+`cut-off z >= 29.99 ... achieved 4.036%` -- four times too many events flagged,
+with only the achieved-percent in the log to show it. The true cut-off is 63.46.
+
+**Fix applied.** `run_analysis` raises "widen z_histogram_range" when the cut-off
+falls in the last bin. `epileptic_by_active_pixels.py` uses (-10, 1000). The
+earlier full runs were not affected (ROI means 3.37, active pixels at 1.5 SD 13.14).
+
+**Also added with it.** `run_analysis(workers=N)` runs detection and figures on a
+`multiprocessing.Pool` (module-level `detect_recording` / `write_recording_outputs`;
+the trace loader must be picklable). Tables are identical to the serial run
+(`tests/test_run_analysis_workers.py`, and 16 real recordings: 66 s -> 15 s on 8).
+`epileptic_min_signal` gates epileptiform peaks on the RAW loaded value at the
+peak frame (`signal_at_peak`, a new column in every `all_peaks.csv`); the
+active-pixel script sets it to 0.20. On the 16 recordings at the true cut-off it
+removed 2 of 76 events: past the cut-off, most peaks already have >20% active.

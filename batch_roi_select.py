@@ -76,6 +76,9 @@ RUN_CONFIG: dict[str, Any] = {
     # False (default): rescaling moves box CENTRES but keeps each box's pixel area
     # fixed -- noise stays comparable across animals.  True = full similarity transform.
     "lambda_scales_box_size": False,
+    # True (default): editing one box of a bilateral pair rewrites its twin as the
+    # exact mirror, so a page cannot be saved half-nudged.  See roi_editor.RUN_CONFIG.
+    "mirror_lock": True,
     # Where ROI sets are WRITTEN.  The filenames (<key>.yaml) are shared with
     # run_intermingle_rs.py -- point its roi_set_dir here and it picks them up.
     # Kept separate from roi_seed_dir so reviewing the rebuilt sets cannot damage them.
@@ -114,6 +117,10 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
     p.add_argument("--preview-frames", type=int, default=defaults["preview_frames"])
     p.add_argument("--start-from", default=defaults["start_from"],
                    help="Seed every page from this ROI set file.")
+    p.add_argument("--no-mirror-lock", dest="mirror_lock", action="store_false",
+                   default=defaults["mirror_lock"],
+                   help="Let one box of a bilateral pair be edited without its twin "
+                        "following. On by default.")
     p.add_argument("--no-load-existing", dest="load_existing", action="store_false",
                    default=defaults["load_existing"],
                    help="Ignore ROI sets already in --roi-set-dir.")
@@ -138,6 +145,7 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         bregma_col=config["bregma_col"],
         lambda_offset=config["lambda_offset"],
         lambda_scales_box_size=bool(config["lambda_scales_box_size"]),
+        mirror_lock=bool(config["mirror_lock"]),
         roi_set_dir=config["roi_set_dir"],
         roi_seed_dir=config["roi_seed_dir"],
         shared_name=config["shared_name"],

@@ -1,0 +1,31 @@
+name: 260807_T11_t1
+grid: [128, 128]
+source: 'rebuilt by rebuild_roi_sets.py: cortex22_roi_set.yaml scaled by lambda 53/55
+  = 0.9636; bilaterally symmetric by construction'
+bregma_row: 106
+bregma_col: 134
+downsample: 0.5
+lambda_row_offset: 53
+boxes:
+  M2L_alta: {row_start: -27, row_end: -22, col_start: -15, col_end: -10}
+  M2L_bassa: {row_start: -10, row_end: -5, col_start: -10, col_end: -5}
+  M1L_alta: {row_start: -16, row_end: -11, col_start: -31, col_end: -26}
+  M1L_bassa: {row_start: -6, row_end: -1, col_start: -19, col_end: -14}
+  BFDL: {row_start: 16, row_end: 21, col_start: -41, col_end: -36}
+  TrL: {row_start: 17, row_end: 22, col_start: -25, col_end: -20}
+  FLL: {row_start: 0, row_end: 5, col_start: -31, col_end: -26}
+  HLL: {row_start: 7, row_end: 12, col_start: -21, col_end: -16}
+  RSL_alta: {row_start: 24, row_end: 29, col_start: -9, col_end: -4}
+  V1aL: {row_start: 26, row_end: 31, col_start: -27, col_end: -22}
+  V1L: {row_start: 39, row_end: 44, col_start: -29, col_end: -24}
+  M2R_alta: {row_start: -27, row_end: -22, col_start: 10, col_end: 15}
+  M2R_bassa: {row_start: -10, row_end: -5, col_start: 5, col_end: 10}
+  M1R_alta: {row_start: -16, row_end: -11, col_start: 26, col_end: 31}
+  M1R_bassa: {row_start: -6, row_end: -1, col_start: 14, col_end: 19}
+  BFDR: {row_start: 16, row_end: 21, col_start: 36, col_end: 41}
+  TrR: {row_start: 17, row_end: 22, col_start: 20, col_end: 25}
+  FLR: {row_start: 0, row_end: 5, col_start: 26, col_end: 31}
+  HLR: {row_start: 7, row_end: 12, col_start: 16, col_end: 21}
+  RSR_alta: {row_start: 24, row_end: 29, col_start: 4, col_end: 9}
+  V1aR: {row_start: 26, row_end: 31, col_start: 22, col_end: 27}
+  V1R: {row_start: 39, row_end: 44, col_start: 24, col_end: 29}

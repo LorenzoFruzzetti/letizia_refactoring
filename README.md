@@ -71,6 +71,12 @@ CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"   # Git Bash
 | Run the manifest batch, one ROI set per animal | `conda run -n letizia python run_botox_batch.py --roi-set-dir roi_sets --full` |
 | Run the manifest batch, the same ROIs for every session | `conda run -n letizia python run_botox_batch.py --roi-set roi_sets/shared_roi_set.yaml --full` |
 | Run the manifest batch as ONE concatenated trial per animal (instead of one per `t#`) | `conda run -n letizia python run_botox_batch.py --merge-recordings --full` |
+| Epileptiform events of every recording in `outputs/botox_restani_rebuilt`, tabulated by area, animal and day (edit the parameters at the top of the file) | `conda run --no-capture-output -n letizia python epileptic_by_area_animal_day.py` |
+| Line plot of total epileptiform events per animal per recording day, coloured by group (needs the table above) | `conda run --no-capture-output -n letizia python plot_epileptic_per_animal_day.py` |
+| Sampled per-ROI comparison of the starting signal and the detection, from a saved pixel analysis | `conda run --no-capture-output -n letizia python plot_pixel_detection_comparisons.py --sample-count 5` |
+| The same detection on the saved pixel dumps, correcting each pixel for reflectance against a 20 s running-median baseline, all 22 atlas ROIs | `conda run --no-capture-output -n letizia python epileptic_by_area_animal_day_pixels.py` |
+| Cache that per-pixel median-baseline dF/F for every dump, once (float16, 8 parallel workers, ~20 min, ~21.5 GB into `pixel_data/`) | `conda run --no-capture-output -n letizia python cache_median_dff.py` |
+| The same detection on the **number of active pixels** per hemisphere instead of ROI means (needs the cache above; 1.5 SD pixel threshold, `260828_PV7/t2` excluded by default) | `conda run --no-capture-output -n letizia python epileptic_by_active_pixels.py` |
 | Runnable example on sample data | `conda run -n letizia python examples/run_example.py` |
 | Worked group-contrast study (cohort → DIFF → figures) | `conda run -n letizia python experiments/healthy_vs_disease_day4.py` |
 | Benchmark all 4 layouts (RAM, time, cross-layout + MATLAB parity) | `conda run -n letizia python benchmarks/benchmark_modalities.py` |
@@ -262,9 +268,12 @@ recording or per animal, or `--roi-set` for one shared layout) load directly.
 Inside `--roi-set-dir`, `run_botox_batch.py` looks for the most specific file first:
 `<day>_<animal>_<t#>.yaml` (one ROI set **per recording**), then
 `<day>_<animal>.yaml` (one per animal), then the shared `--roi-set`. That is why
-`roi_sets/rebuilt/` — 355 files, one per recording in the manifest — is used with
+`roi_sets/rebuilt/` — 546 files, one per recording: the 356 of the original manifest
+plus the 190 drawn in September 2026 for the 260807-260909 sessions — is used with
 `--roi-set-dir roi_sets/rebuilt`: each `t#` is analysed with the boxes and Bregma
-that belong to it. Two landmarks do the heavy
+that belong to it. Every file there is a pure Lambda rescale of the baseline atlas
+written by [`rebuild_roi_sets.py`](rebuild_roi_sets.py), bilaterally symmetric by
+construction. Two landmarks do the heavy
 lifting: dragging **Bregma** translates the whole layout rigidly, and dragging
 **Lambda** — whose distance from Bregma is the scale the offsets are in — stretches or
 shrinks it about Bregma, for a brain that sits bigger or smaller in the field of view.
@@ -422,6 +431,169 @@ its CSV row, the next run reconstructs that row from the saved metadata. Serial
 jobs print live and Ctrl+C stops the main process cleanly. The experimental parallel
 path buffers job logs, emits a heartbeat, and terminates workers on Ctrl+C.
 
+`epileptic_by_area_animal_day.py` reads every
+`outputs/botox_restani_rebuilt/<date>_<animal>/<t#>/roi_fluorescence_full.csv` plus
+the group column of `outputs/botox_restani_rebuilt/batch_summary.csv`, runs the
+epileptiform detection of `test_epileptic_detection.py` (functions copied, same
+parameters) with **one z cut-off calibrated over the pooled frames of all
+recordings**, and writes into `outputs/epileptic_by_area_animal_day/`.
+
+"Day" in these tables is `recording_day`, the animal's Nth recording date
+(1 = its first date in the dataset), not the calendar date; the date is kept in a
+`date` column for reference.
+
+| File | What it holds |
+|------|---------------|
+| `epileptic_by_area_animal_day.csv` | one row per group × animal × recording day × ROI (t1..t5 summed): `date`, `area`, `hemisphere`, `n_recordings`, `recorded_min`, `n_peaks`, `n_confirmed`, `n_epileptic`, `epileptic_per_roi_min`. Zero rows are kept. |
+| `epileptic_by_area.csv` / `epileptic_by_animal.csv` / `epileptic_by_day.csv` | the long table summed by group+ROI, group+animal, recording day+group; the rate is events per ROI-minute at every level |
+| `epileptic_counts_wide.csv` | one row per animal + recording day, one count column per ROI, plus `total` |
+| `all_peaks.csv` | every amplitude peak of every recording with `recording_day`, `date` and its `confirmed` / `epileptic` flags |
+| `detection_config.json` | the detection parameters and the calibrated `z_threshold` |
+| `epileptic_rate_heatmap.png`, `epileptic_rate_by_area_group.png` | rate per ROI per animal + recording day; rate per ROI per group |
+
+It writes nothing into the recording folders.
+
+`epileptic_by_area_animal_day_pixels.py` runs the same detector, but builds the
+ROI traces itself from `pixel_data/<date>_<animal>/<t#>/` (the per-pixel dumps
+`run_botox_batch.py --save-data` writes) instead of reading
+`roi_fluorescence_full.csv`. Group assignments still come from
+`--input-root`'s `batch_summary.csv`. Two signal modes:
+
+| `--signal-mode` | Per-pixel signal, then the spatial ROI mean | Unit |
+|---|---|---|
+| `median_dff` (default) | (F/F̄) / (R/R̄) − 1, with F̄ and R̄ each pixel's **centred running median** over `--baseline-median-window-s` (default 20 s) | dF/F ratio (×100 for the % `run_botox_batch` writes) |
+| `reflectance_ratio` | F × mean_t(R) / R — no F-baseline division, no −1 | raw fluorescence |
+
+`median_dff` is the correction of `wfci.correction.hemodynamic_correction` with a
+local instead of a whole-recording baseline, so slow drift in either channel is
+divided out before the ROI average. Note the detector then subtracts its own
+running median (`--median-window-s`, also 20 s), so in this mode the signal is
+high-passed twice — once per pixel, once per ROI. Raise `--median-window-s` or
+switch modes if only one stage is wanted.
+
+ROI boxes come from each recording's own saved atlas (`--all-rois`, the default:
+all 22 cortex22 boxes as drawn). `--custom-boxes` adds the four hand-specified
+right motor boxes in `CUSTOM_BOXES`, which **replace** the atlas boxes of the same
+name; because those replacements are not the mirror images of their left twins,
+they are off by default whenever `--all-rois` is on, and on when it is off.
+
+Outputs go to `outputs/epileptic_by_area_animal_day_pixels_median_dff_wide/` (the same
+cohort tables as above, listed in the previous section) plus, per recording:
+
+| File | What it holds |
+|------|---------------|
+| `<date>_<animal>/<t#>/roi_median_dff.csv` (or `roi_reflectance_corrected_fluorescence.csv`) | the extracted traces: `trial`, `frame`, one column per ROI |
+| `<date>_<animal>/<t#>/roi_geometry.json` | the exact boxes, crop slices, Bregma, signal mode and baseline window used |
+| `<date>_<animal>/<t#>/epileptic_detection/roi_events.csv`, `roi_epileptic_events.csv` | every peak and the flagged subset |
+| `<date>_<animal>/<t#>/epileptic_detection/roi_traces_all.png` | every ROI overlaid over the whole recording — the counterpart of `roi_traces_full.png` |
+| `<date>_<animal>/<t#>/epileptic_detection/roi_traces_rise.png` | one panel per ROI: smoothed amplitude and rise rate with the detections |
+
+Every recording is detected and goes into the pooled cut-off, but the two
+per-recording figures are drawn only for `--debug-animals-per-group` (default 5)
+random animals per group — every recording of each, seeded by `--debug-seed` and
+listed in `detection_config.json` as `diagnostic_animals`. They are stretched
+`--debug-width-scale` (default 30) times wider, ~190 px per second, with a grid
+line every second, a label every 10 s and the ROI name repeated every 30 s; that
+is 57,600 px wide and ~46 MB per recording, so open them in an image viewer that
+pans rather than one that fits to the window. `--debug-animals-per-group all
+--debug-width-scale 1` restores the previous compact figures for every recording;
+`--debug-plot-count N` further thins the sampled recordings, `0` draws none.
+The event tables are still written for every recording. Nothing is written into
+`pixel_data/`.
+
+#### Median dF/F cache and the active-pixel detector
+
+`cache_median_dff.py` computes, once per dump, the per-pixel
+`(F/Fbar)/(R/Rbar) - 1` of `--signal-mode median_dff` over the whole saved crop and
+writes it next to the dump:
+
+| File (in `pixel_data/<date>_<animal>/<t#>/`) | What it holds |
+|------|---------------|
+| `pixels_median_dff_20s_full.npy` | `(n_time, rows, cols)` = `(2980, 76, 87)`, float16 by default (`--dtype float32` for exact), a ratio (x100 for %) |
+| `pixels_median_dff_20s_meta.json` | formula, window (s and frames), shape, dtype, value range, worst float16 error; written last, it marks the cache as complete |
+
+The window is in the name (`--window-s`), so a cache for another window never
+mixes with this one. Averaging the cached volume over a box reproduces the ROI
+traces of `epileptic_by_area_animal_day_pixels.py` exactly. float16 costs a worst
+0.25% of a pixel's temporal SD and 0.04% of an ROI trace's SD (39.4 MB per
+recording, 21.5 GB for 545); float32 is exact at twice the size. Already-cached
+recordings are skipped, so an interrupted run resumes; `--overwrite` rebuilds.
+`--workers` (default 8) runs recordings in parallel: measured on this machine,
+545 recordings take 107 min serially, 29 min on 4, 21 on 8, 17 on 12 and 13 on 20
+workers, at ~1.1 GB RAM per worker.
+
+`epileptic_by_active_pixels.py` runs the same cohort detector on a different
+signal: for each hemisphere, the **fraction of pixels inside the union of the
+recording's atlas boxes whose dF/F exceeds `--pixel-z-threshold` robust SDs of
+that pixel's own trace**. Two traces per recording, `CortexL_active` and
+`CortexR_active`, area `Cortex_active`; box boundaries are otherwise ignored.
+Both the smoothed amplitude and the rise come from this fraction; the rise uses
+the smoothed fraction by default (`--no-rise-on-smoothed` for the detrended one).
+`--dff-source median_dff` (default) reads the cache above and fails if it is
+missing; `--dff-source pipeline_dff` reads `pixels_dff_full.npy` (whole-recording
+mean baseline) instead.
+
+**Choose the pixel threshold with care.** Active pixels fire together, so the
+fraction is exactly 0 in most frames once the threshold is high, its MAD is then
+0, and the detector has no scale. On the median dF/F, at 3 SD the fraction is 0 in
+77-92% of frames and the robust SD is 0 (the run stops with "No finite, non-flat
+ROI frames available for calibration"); 2.5 SD is below one pixel's resolution;
+0.5-2 SD work in every sampled recording. `RUN_CONFIG` currently uses 2.0.
+
+**Which SD.** `--pixel-scale mad` (default) is 1.4826 x MAD of the whole trace.
+`--pixel-scale bottom_percentile` is instead the plain SD of the pixel's values at
+or below its own `--pixel-scale-percentile` (default 50, the bottom half), so the
+events at the top of the trace cannot widen the scale. It is the SD of a
+truncated distribution and so is smaller: measured on 8 recordings it is
+0.58-0.61x the MAD SD (Gaussian noise gives 0.60x), i.e. a threshold of 2 here is
+about 1.2 robust SDs. With this scale the fraction keeps a usable robust SD up to
+a threshold of about 2 (0.007-0.075); at 2.5 some recordings already reach 0.
+Its runs go to a folder ending in `_bottom<N>sd`.
+
+**Minimum active fraction.** `--epileptic-min-signal` (default 0.20) adds one
+condition to an epileptiform peak: at least 20% of the hemisphere's pixels must
+be active at the peak frame, read from the raw fraction (before detrending and
+smoothing). Every peak in `all_peaks.csv` carries that value as
+`signal_at_peak`; 0 disables the gate. (`run_analysis` takes the same
+`epileptic_min_signal`, default off, so the ROI-mean scripts are unchanged apart
+from the new column.)
+
+**Parallel runs.** `--workers` (default 8) runs the per-recording detection and
+figures on a process pool; `--workers 1` is serial, for debugging. On 16
+recordings with figures: 66 s serial, 15 s on 8 workers, identical tables.
+The active fraction's z values run far above an ROI mean's (cut-off z 63 at a
+2 SD pixel threshold), so this script's `z_histogram_range` is (-10, 1000);
+`run_analysis` now raises if the cut-off lands on the top edge of the range.
+
+`--exclude-recordings` (default `260828_PV7/t2`, whose frame 1809 is a
+field-wide reflectance glitch) leaves recordings out entirely; the rates stay per
+recorded minute, so the shorter day+animal unit is not undercounted.
+
+Outputs go to `outputs/epileptic_by_active_pixels_<dff_source>_rise_<smoothed|detrended>[_bottom<N>sd]/`:
+the same cohort tables and figures, plus per recording
+`active_pixel_fraction.csv` (`trial`, `frame`, the two fractions),
+`active_pixel_geometry.json` (volume, threshold, boxes, counted pixels, pixels
+dropped for a zero scale, pixel scale used) and the `epileptic_detection/` files described above.
+
+`plot_epileptic_per_animal_day.py` reads `epileptic_by_area_animal_day.csv`, sums
+`n_epileptic` over all ROIs per animal and recording day, and plots every animal
+(lines end on each animal's last recording day; `only_complete_animals = True`
+keeps only animals recorded on every day). `input_csv` at the top of the file
+selects which analysis to plot — it currently points at the pixel/`median_dff`
+tree. It writes into `outputs/epileptic_median_dff_analysis/epileptic_per_animal_day/`:
+`epileptic_total_per_animal_day.png` (one line per animal, colour = group) and
+`epileptic_total_per_animal_day.csv` (the plotted totals).
+
+`plot_pixel_detection_comparisons.py` puts each sampled recording's starting
+signal (with its running median) beside the detection signals, one row per ROI,
+reusing the saved traces and event flags — it never re-detects. The trace file,
+its unit and the titles come from the analysis's own `detection_config.json`, so
+it works against either `--signal-mode` tree. One figure is ~8 MB for 22 ROIs, so
+`--sample-count` (default 5, evenly spaced over the cohort; `all` for every
+recording) bounds the cost; `--add-recording <date>_<animal>/<t#>` pins extra
+ones, remembered in the output folder's `comparison_recordings.json`. Writes into
+`outputs/epileptic_median_dff_analysis/sampled_plot_comparisons/`.
+
 `benchmarks/benchmark_modalities.py` writes `outputs/modality_comparison.txt` —
 a plain-text report comparing all four layouts (`stack` | `folder` | `stream` |
 `interleaved`) on the sample dataset: per-layout **wall time** and **peak RAM**
@@ -531,6 +703,13 @@ letizia/
 │                               per recording folder found below the input (study script)
 ├── run_botox_batch.py        ← BOTOX manifest batch, one analysis per t# recording
 ├── scan_botox_dataset.py     ← builds manifests/botox_restani_manifest.csv
+├── test_epileptic_detection.py   ← epileptiform detection on ONE roi_fluorescence CSV (test script)
+├── epileptic_by_area_animal_day.py ← same detection on every recording → tables by area/animal/day
+├── plot_epileptic_per_animal_day.py ← that table → total events per animal per recording day (line plot)
+├── epileptic_by_area_animal_day_pixels.py ← same detection, traces rebuilt from pixel_data/ (median-baseline dF/F)
+├── cache_median_dff.py       ← per-pixel median-baseline dF/F → pixel_data/*/*/pixels_median_dff_20s_full.npy (parallel)
+├── epileptic_by_active_pixels.py ← same detection on the fraction of active pixels per hemisphere
+├── epileptic_diagnostics.py      ← shared per-recording figures (detrending, detections, rise, all-ROI overview)
 ├── roi_sets/                 ← ROI sets drawn with roi_editor.py (boxes + Bregma);
 │                               cortex22_roi_set.yaml = the 22 CORTEX_22 boxes, checked in
 ├── manifests/                ← dataset manifests (CSV)

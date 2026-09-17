@@ -42,8 +42,11 @@ from roi_editor import (  # noqa: E402
     MIN_LAMBDA_OFFSET,
     ROIEditor,
     Session,
+    mirror_box,
+    mirror_twin,
     pixel_bounds,
     rotate_boxes,
+    round_half_away,
     scale_boxes,
 )
 from wfci.atlases import CORTEX_22  # noqa: E402
@@ -534,7 +537,8 @@ def test_ctrl_arrows_move_bregma_and_all_boxes(key_name, shift, expected):
     assert shifts == {expected}, "boxes did not track Bregma"
 
 
-def test_plain_arrows_move_only_the_selected_box():
+def test_plain_arrows_move_only_the_selected_pair():
+    """A plain arrow is a per-box edit: Bregma stays, and only the pair moves."""
     editor = make_editor()
     session = editor.session
     editor._select("V1R")
@@ -542,6 +546,20 @@ def test_plain_arrows_move_only_the_selected_box():
     press(editor, "Down")
 
     assert (session.y_1, session.x_2) == anchor, "a plain arrow moved Bregma"
+    moved = sorted(l for l in before if before[l] != bounds(session)[l])
+    # The mirror lock is on by default, so V1L follows V1R and nothing else moves.
+    assert moved == ["V1L", "V1R"]
+
+
+def test_plain_arrows_move_one_box_when_the_mirror_lock_is_off():
+    editor = make_editor()
+    session = editor.session
+    press(editor, "M")                      # unlock
+    assert not editor.mirror_lock
+    editor._select("V1R")
+    before = bounds(session)
+    press(editor, "Down")
+
     moved = [l for l in before if before[l] != bounds(session)[l]]
     assert moved == ["V1R"]
 
@@ -684,3 +702,147 @@ def test_the_shipped_22_box_set_declares_the_distance_it_was_drawn_at(tmp_path):
     atlas, _row, _col = load_roi_set(path)
     assert dict(atlas) == dict(CORTEX_22.boxes), "the shipped set is CORTEX_22 unscaled"
     assert load_lambda_offset(path) == DEFAULT_LAMBDA_OFFSET
+
+
+# ---------------------------------------------------------------------------
+# Bilateral mirror symmetry
+#
+# Every ROI set drawn before these two guards existed came out asymmetric: a 1 px
+# rounding tie in scale_boxes on half the files, and a 2-3 px one-hemisphere hand
+# nudge on V1 and M2 that 'c' then carried into every later page. Both are invisible
+# in the GUI and produce a perfectly ordinary correlation matrix, so they are tested
+# rather than eyeballed. See rebuild_roi_sets.py for the measurement.
+# ---------------------------------------------------------------------------
+def mirror_offset_error(session) -> dict[str, float]:
+    """Per pair, how far the two boxes are from being mirrored about Bregma.
+
+    Offsets are measured from Bregma, so a mirrored pair has column centres that sum
+    to exactly zero. Non-zero is the asymmetry, in pixels of centre displacement.
+    """
+    errors = {}
+    for label, box in session.boxes.items():
+        twin = mirror_twin(label, session.boxes)
+        if twin is None:
+            continue
+        other = session.boxes[twin]
+        errors[label] = ((box.col_start + box.col_end) / 2
+                         + (other.col_start + other.col_end) / 2)
+    return errors
+
+
+def test_no_rounding_rule_can_carry_the_mirror_on_its_own():
+    """Why scale_boxes reflects instead of trusting a rounding rule.
+
+    A mirrored pair survives rounding only if the rule is odd AND translation
+    invariant. At a tie those contradict: oddness gives f(-0.5) == -f(0.5),
+    translation gives f(-0.5) == f(0.5) - 1, so f(0.5) would have to be 0.5.
+    """
+    assert [round_half_away(v) for v in (0.5, 1.5, -0.5, -1.5, 5.5)] == [1, 2, -1, -2, 6]
+    # Odd, which half-to-even is not where it matters.
+    for x in (0.5, 2.5, -3.5, 7.25, -0.75):
+        assert round_half_away(-x) == -round_half_away(x)
+    # Translation invariant, but only away from a sign change at a tie.
+    for x in (7.25, -0.75, 2.5):
+        for n in (1, 5):
+            if (x >= 0) == (x + n >= 0):
+                assert round_half_away(x + n) == round_half_away(x) + n
+    assert round(5.5) - round(0.5) == 6            # half-to-even: off by 1
+    assert round_half_away(4.5) - 5 != round_half_away(-0.5)   # ties-away: also off by 1
+
+
+def test_scale_boxes_keeps_every_bilateral_pair_mirrored():
+    """The 1 px class: half-to-even broke this at exactly the ties tested here."""
+    boxes = dict(CORTEX_22.boxes)
+    labels = list(boxes)
+    for factor in (0.5, 0.782, 0.873, 1.0, 1.1, 55 / 30, 2.0):
+        scaled = scale_boxes(boxes, factor)
+        for label in labels:
+            twin = mirror_twin(label, labels)
+            if twin is None:
+                continue
+            assert scaled[twin] == mirror_box(scaled[label]), (
+                f"{label}/{twin} lost mirror symmetry at factor {factor}")
+
+
+def test_lambda_rescale_cannot_make_a_layout_asymmetric():
+    """The same guarantee through the editor's own knob, over its whole usable range."""
+    editor = make_editor()
+    session = editor.session
+    for offset in range(MIN_LAMBDA_OFFSET, 90):
+        editor._set_lambda(offset)
+        assert set(mirror_offset_error(session).values()) == {0}, f"asymmetric at {offset}"
+
+
+def test_mirror_twin_reads_the_side_letter_not_the_first_letter():
+    labels = list(CORTEX_22.boxes)
+    assert mirror_twin("M2L_alta", labels) == "M2R_alta"
+    assert mirror_twin("M2R_alta", labels) == "M2L_alta"
+    assert mirror_twin("FLL", labels) == "FLR"
+    assert mirror_twin("FLR", labels) == "FLL"
+    # RSL_alta starts with an R that is NOT the side: LSL_alta is not a box.
+    assert mirror_twin("RSL_alta", labels) == "RSR_alta"
+    assert mirror_twin("RSR_alta", labels) == "RSL_alta"
+    assert mirror_twin("Bregma_only", labels) is None
+
+
+def test_nudging_one_box_mirrors_its_twin_exactly():
+    editor = make_editor()
+    session = editor.session
+    editor._select("M2L_alta")
+    press(editor, "Left")
+    press(editor, "Up", shift=True)
+
+    assert session.boxes["M2R_alta"] == mirror_box(session.boxes["M2L_alta"])
+    assert set(mirror_offset_error(session).values()) == {0}
+    assert "M2R_alta mirrored with it" in editor.message
+
+
+def test_resizing_one_box_mirrors_its_twin_exactly():
+    editor = make_editor()
+    session = editor.session
+    editor._select("V1aR")
+    press(editor, "Plus")
+    press(editor, "Plus")
+
+    left, right = session.boxes["V1aL"], session.boxes["V1aR"]
+    assert left == mirror_box(right)
+    assert left.col_end - left.col_start == right.col_end - right.col_start
+
+
+def test_a_mouse_drag_mirrors_the_twin_too():
+    """The drag path is separate from the keyboard one and was the likelier source."""
+    editor = make_editor()
+    session = editor.session
+    roi = editor._rois["HLL"]
+    pos = roi.pos()
+    roi.setPos(pos.x() + 4, pos.y() - 3)      # emits the same signal a hand drag does
+
+    assert session.boxes["HLR"] == mirror_box(session.boxes["HLL"])
+    assert set(mirror_offset_error(session).values()) == {0}
+
+
+def test_the_mirror_lock_repairs_a_pair_that_was_already_off():
+    """It copies the mirrored BOX, not the mirrored delta, so one edit fixes the pair."""
+    from wfci import Box
+
+    editor = make_editor()
+    session = editor.session
+    good = session.boxes["TrL"]
+    session.boxes["TrR"] = Box(good.row_start + 3, good.row_end + 3,
+                               -good.col_end + 2, -good.col_start + 2)
+    assert mirror_offset_error(session)["TrL"] != 0
+
+    editor._select("TrL")
+    press(editor, "Right")
+
+    assert session.boxes["TrR"] == mirror_box(session.boxes["TrL"])
+    assert mirror_offset_error(session)["TrL"] == 0
+
+
+def test_m_toggles_the_lock_and_says_which_way():
+    editor = make_editor()
+    assert editor.mirror_lock
+    press(editor, "M")
+    assert not editor.mirror_lock and "OFF" in editor.message
+    press(editor, "M")
+    assert editor.mirror_lock and "ON" in editor.message
