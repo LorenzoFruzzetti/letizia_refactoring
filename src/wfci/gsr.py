@@ -49,6 +49,20 @@ rather than a default that might change later:
     Reserved for the general alternative (use each pixel's finite frames). Not
     implemented: it would make the valid set time-varying and break the streaming
     identity, so it needs its own design rather than a quiet default flip.
+
+**Global signal** (``GSRConfig.global_mean``):
+
+``"column"`` (default)
+    Exactly MATLAB's ``nanmean(nanmean(data,1),2)``: the mean down each column of
+    the frame, then the mean of those column means. Every column that holds at
+    least one valid pixel counts once, however many valid pixels it holds.
+    Verified against the MATLAB chain run on real data (CLAUDE.md 9.37).
+``"pixel"``
+    The plain mean over all valid pixels. Equal to ``"column"`` only when every
+    column holds the same number of valid pixels (e.g. a mask that removes whole
+    columns); for an irregular brain mask or a union of ROI boxes they differ,
+    and on real data the difference moves ROI correlations by up to 0.13. This was
+    the behaviour before 2026-10-05.
 """
 
 from __future__ import annotations
@@ -57,6 +71,10 @@ import warnings
 from dataclasses import dataclass
 
 import numpy as np
+
+
+# How the global signal averages a frame's valid pixels; see the module docstring.
+GLOBAL_MEANS = ("column", "pixel")
 
 
 @dataclass(frozen=True)
@@ -71,16 +89,24 @@ class GSRConfig:
         A pixel whose global signal has (numerically) no variance has no
         identifiable slope -- ``a = 0/0``. Guarded rather than left to produce
         silent NaN/inf.
+    ``global_mean``:
+        ``"column"`` (default, MATLAB's nested nanmean) or ``"pixel"``; see the
+        module docstring.
     """
 
     nan_policy: str = "drop_pixel"
     min_variance: float = 0.0
+    global_mean: str = "column"
 
     def __post_init__(self) -> None:
         allowed = ("drop_pixel", "per_frame")
         if self.nan_policy not in allowed:
             raise ValueError(
                 f"nan_policy={self.nan_policy!r} is not one of {allowed}."
+            )
+        if self.global_mean not in GLOBAL_MEANS:
+            raise ValueError(
+                f"global_mean={self.global_mean!r} is not one of {GLOBAL_MEANS}."
             )
         if self.nan_policy == "per_frame":
             raise NotImplementedError(
@@ -90,11 +116,49 @@ class GSRConfig:
             )
 
 
-def global_signal(stack: np.ndarray) -> np.ndarray:
+def spatial_mean(values: np.ndarray, finite: np.ndarray, global_mean: str = "column") -> np.ndarray:
+    """Mean over axes (0, 1) of ``[y, x, ...]`` values, counting only ``finite`` entries.
+
+    ``global_mean="column"``: mean down each column (axis 0), then the mean of the
+    columns that hold any finite entry -- MATLAB's ``nanmean(nanmean(v,1),2)``.
+    ``"pixel"``: plain mean of every finite entry. Works on one frame ``[y, x]``
+    (returns a 0-d array) or a stack ``[y, x, time]`` (returns ``[time]``), so the
+    in-memory and streaming paths share it.
+    """
+    if global_mean not in GLOBAL_MEANS:
+        raise ValueError(f"global_mean={global_mean!r} is not one of {GLOBAL_MEANS}.")
+    clean = np.where(finite, values, 0.0)
+    if global_mean == "pixel":
+        counts = finite.sum(axis=(0, 1))
+        if np.any(counts == 0):
+            raise ValueError(
+                "The global signal is undefined for at least one frame, i.e. that "
+                "frame has no valid pixels at all. Check the brain mask and the "
+                "input data."
+            )
+        return clean.sum(axis=(0, 1)) / counts
+    # column_counts / column_sums: [x, ...]; a column with no finite entry is
+    # skipped, as nanmean skips the NaN its inner nanmean returns.
+    column_counts = finite.sum(axis=0)
+    column_sums = clean.sum(axis=0)
+    has_pixels = column_counts > 0
+    column_means = np.where(has_pixels, column_sums / np.maximum(column_counts, 1), 0.0)
+    n_columns = has_pixels.sum(axis=0)
+    if np.any(n_columns == 0):
+        raise ValueError(
+            "The global signal is undefined for at least one frame, i.e. that "
+            "frame has no valid pixels at all. Check the brain mask and the "
+            "input data."
+        )
+    return column_means.sum(axis=0) / n_columns
+
+
+def global_signal(stack: np.ndarray, global_mean: str = "column") -> np.ndarray:
     """The spatial mean of each frame, over its FINITE pixels -> ``[time]``.
 
-    MATLAB's ``squeeze(nanmean(nanmean(data,1),2))``, with one deliberate
-    strengthening: non-finite means ``inf`` as well as ``nan``.
+    MATLAB's ``squeeze(nanmean(nanmean(data,1),2))`` (``global_mean="column"``,
+    the default; ``"pixel"`` for the plain pixel mean, see the module docstring),
+    with one deliberate strengthening: non-finite means ``inf`` as well as ``nan``.
 
     ``nanmean`` ignores NaN but happily propagates ``inf``, so a single infinite
     pixel would turn the whole frame's global signal into ``inf`` and, through the
@@ -103,7 +167,7 @@ def global_signal(stack: np.ndarray) -> np.ndarray:
     Delta F/F divides by the emo channel, so a zero in ``emo(t)`` produces one.
     MATLAB has the same hole (``~isnan(inf)`` is true, so it would feed the inf
     straight to ``fitlm``). Excluding non-finite values instead costs nothing on
-    clean data -- where the two rules agree exactly -- and removes the failure
+    clean data -- where the NaN/inf rules agree exactly -- and removes the failure
     mode on dirty data.
 
     Note this is a *spatial* reduction: ``g(t)`` depends only on frame ``t``, so
@@ -114,16 +178,7 @@ def global_signal(stack: np.ndarray) -> np.ndarray:
     if stack.ndim != 3:
         raise ValueError(f"stack has shape {stack.shape}; expected [y, x, time].")
 
-    finite = np.isfinite(stack)
-    counts = finite.sum(axis=(0, 1))
-    if (counts == 0).any():
-        raise ValueError(
-            "The global signal is undefined for at least one frame, i.e. that "
-            "frame has no valid pixels at all. Check the brain mask and the "
-            "input data."
-        )
-    sums = np.where(finite, stack, 0.0).sum(axis=(0, 1))
-    return sums / counts
+    return spatial_mean(stack, np.isfinite(stack), global_mean)
 
 
 def _valid_pixels(stack: np.ndarray) -> np.ndarray:
@@ -159,7 +214,7 @@ def regress_global(
     if stack.ndim != 3:
         raise ValueError(f"stack has shape {stack.shape}; expected [y, x, time].")
 
-    g = global_signal(stack) if g is None else np.asarray(g, dtype=np.float64)
+    g = global_signal(stack, cfg.global_mean) if g is None else np.asarray(g, dtype=np.float64)
     if g.shape != (stack.shape[2],):
         raise ValueError(
             f"global signal has shape {g.shape}; expected ({stack.shape[2]},)."

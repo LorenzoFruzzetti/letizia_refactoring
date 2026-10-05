@@ -1,0 +1,5 @@
+check if the data are encoded without loss of info 
+* the matlab script already scale it to 0.5 so we just need to check if the scale to 0.25 is fine 
+
+
+oxi and deoxi -> change on a bunch of thing 

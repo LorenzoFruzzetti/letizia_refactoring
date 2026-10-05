@@ -894,3 +894,483 @@ the trace loader must be picklable). Tables are identical to the serial run
 peak frame (`signal_at_peak`, a new column in every `all_peaks.csv`); the
 active-pixel script sets it to 0.20. On the 16 recordings at the true cut-off it
 removed 2 of 76 events: past the cut-off, most peaks already have >20% active.
+
+### 9.25 September cohort had no group on this machine; the full pixel run could not start
+**Problem.** `pixel_data/` holds 109 units (545 recordings), but
+`outputs/botox_restani_rebuilt/batch_summary.csv` lists only the 71 units of
+`botox_restani_manifest.csv`. The 38 units of `botox_restani_2026_09_manifest.csv`
+were batched on another machine and only their pixel dumps were copied here.
+`run_analysis` takes groups from `<input_root>/batch_summary.csv` and raises
+`no group in batch_summary.csv for: [...]` before detection. Under
+`conda run -n letizia` (without `--no-capture-output`) that traceback was not
+shown, so the run looked like it exited silently after printing `Output:`,
+leaving an empty output folder.
+
+**Fix applied.** `build_epileptic_groups.py` writes
+`outputs/epileptic_groups/batch_summary.csv` (`day,animal,group`, 109 units:
+P 18, R 33, T 58) from both manifests, raising on a unit with two groups, a group
+that disagrees with the connectivity summary, or a pixel unit with no group.
+Run the pixel detectors with `--input-root outputs/epileptic_groups`; the
+connectivity summary is untouched. Use `--no-capture-output` (or the env's
+`python.exe` directly) to see errors.
+
+### 9.26 This machine's conda and checkout paths differ from §4.2/§9.19 (2026-09-21)
+**Observed on the `loren` machine.** §4.2 and §9.19 document
+`C:\Users\utente\anaconda3\...\conda.bat`; here there is no `utente` profile and no
+Anaconda. Conda is **Miniconda**:
+
+- `C:\Users\loren\miniconda3\condabin\conda.bat`
+- env `letizia` at `C:\Users\loren\miniconda3\envs\letizia`
+
+```powershell
+& "$env:USERPROFILE\miniconda3\condabin\conda.bat" run --no-capture-output -n letizia python -u <script>.py
+```
+
+**Git Bash produced NO output at all** from `"$USERPROFILE/anaconda3/condabin/conda.bat"
+run --no-capture-output ...` (the path does not exist there, and the miniconda path
+also returned nothing). Use the PowerShell form above; it works.
+
+**§9.13's wrong-checkout trap IS present here.** Under `conda run -n letizia`,
+`wfci.__file__` resolves to `C:\Users\loren\Documents\letizia\src\wfci\__init__.py`,
+NOT `H:\Developing_projects\letizia\src`. Anything importing `wfci` from this repo
+needs `PYTHONPATH=H:\Developing_projects\letizia\src` (or the editable install
+re-pointed, which changes the other checkout — ask first). The root-level epileptic
+scripts import each other by module name, so they resolve to this repo and are not
+affected; the `wfci` package and its tests are.
+
+### 9.27 `260828_PV7/t2`: the glitch frame also carries a persistent GCaMP step
+**Found (2026-09-22) with `plot_hemisphere_traces.py`'s GCaMP-only figure.** 9.23
+describes frame 1809 as a one-frame reflectance glitch. It is more than that. The
+field-mean raw counts:
+
+| | frames 1700-1799 | frames 1820-1919 | step |
+|---|---|---|---|
+| `F_gcamp` | 8429 | 8103 | **-3.9 %, persistent** |
+| `F_emo` | 20812 | 20695 | -0.6 % |
+
+Reflectance drops to ~8000 for frame 1809 alone and recovers by 1811; GCaMP drops by
+~330 counts at 1810 and stays there for the rest of the recording (illumination or
+acquisition change, not hemodynamics -- the emo channel does not follow). Effects:
+a mean-baseline dF/F (`pixels_dff_full.npy`, run_botox_batch's traces) has a -4 %
+offset for the last 40% of the recording; running-median baselines absorb it
+after a transient of one window (20 s / 60 s). The emo correction cannot remove it.
+Excluding the recording (9.23's default in `epileptic_by_active_pixels.py`) is still
+the right call.
+
+### 9.28 Editing a CRLF doc from Python writes `\r\r\n`, and the obvious check misses it
+**Problem (2026-09-23).** The repo's `.md` files are CRLF. A helper that inserts a
+line the natural way --
+
+```python
+text = path.read_text(encoding="utf-8")          # universal newlines: CRLF -> \n
+...                                              # insert the line
+path.write_text(text.replace("\n", "\r\n"))       # text mode translates AGAIN
+```
+
+writes `\r\r\n` on every line: the explicit `\r\n` still contains a `\n`, and Windows
+text mode turns that one into `\r\n` as well.
+
+**Why it survived a check.** Counting `b"\r\n"` and bare `b"\n"` reports *CRLF 948,
+bare LF 0* on such a file -- exactly what a clean CRLF file reports, because every
+`\r\r\n` contains one `\r\n` and no bare LF. That is the check that pronounced
+README.md "clean, nothing was actually damaged" after an earlier edit. It was not.
+Count `b"\r\r\n"`, or `b"\r"` minus `b"\r\n"`, instead.
+
+**Second edit doubles the file.** Reading `\r\r\n` back with universal newlines
+yields `\n\n`, i.e. a blank line after every line, so the next edit turns 948 lines
+into 1899 and writes them out doubled again. That is visible damage, unlike the
+first pass. Caught here on README.md (`git diff --stat`: 1899 insertions, 878
+deletions on a two-line edit) and repaired: the artifact blank after each line is
+removed, the endings rewritten as plain CRLF, leaving a pure-insertion diff.
+GUIDE.md and REFERENCE.md had only the first-pass form and were rewritten.
+
+**Rule.** Write repo files as bytes (`path.write_bytes(text.replace("\n", "\r\n")
+.encode("utf-8"))`) or open with `newline=""`, and verify with `git diff --stat`:
+any deletion count on an insert-only edit means the line endings moved.
+
+### 9.29 pytest cannot create its default temp/cache folders on the `loren` machine
+**Problem (2026-09-27).** Every test that takes `tmp_path` errored with
+`PermissionError: [WinError 5] Accesso negato: C:\Users\loren\AppData\Local\Temp\pytest-of-loren`,
+and `.pytest_cache` in the repo is not writable either. These are environment
+failures, not test failures: 12 errors, all in tests using `tmp_path`.
+
+**Workaround.** Point pytest at a writable base temp and skip the cache:
+
+```powershell
+$env:PYTHONPATH = "E:\Developing_projects\letizia\src;E:\Developing_projects\letizia"
+& "$env:USERPROFILE\miniconda3\condabin\conda.bat" run --no-capture-output -n letizia python -m pytest -q -p no:cacheprovider --basetemp <writable dir> tests
+```
+
+With that, the full suite is 286 passed (including the new
+`tests/test_pixel_roi_editor.py`). `PYTHONPATH` is still needed for 9.26's
+wrong-checkout trap.
+### 9.30 statsmodels `MixedLM` with a nested session component: the default optimizer fails silently
+**Found (2026-09-27) in `test_drift_vs_design.py`.** The model is a random intercept
+per animal plus `vc_formula={"session": "0 + C(session)"}`. With the default
+`fit()` (bfgs) the full model stopped at log-likelihood -69.80 while lbfgs, powell
+and nm all agree on -61.80; the only symptom was a `ConvergenceWarning` and a
+likelihood-ratio statistic of **-1.02**, i.e. the reduced model "fitting better"
+than the full one, which is impossible at a real optimum. lbfgs alone then failed on
+a different model (the GCaMP-drift null model), so no single optimizer is enough.
+
+**Fix applied.** `fit_nested_model` fits with `method=["lbfgs", "powell", "nm"]`
+(statsmodels moves to the next on failure) and raises if `converged` is still
+False. Any LR statistic below 0 means a fit did not converge: do not report it.
+
+**Also:** `statsmodels` was not in the env; it is now (`statsmodels>=0.14`, installed
+0.15.0 from conda-forge) and recorded in `.env/environment.yml` and
+`.env/requirements.txt`.
+
+**Measured on the 544 recordings (for whoever looks at the drift next).** The
+mean-baseline dF/F falls in 98% of recordings, about -0.55 % dF/F per minute
+(sd 0.28), with or without the emo correction. Variance of that slope: animal 7%,
+session within animal 12%, recording within session 81% (GCaMP-only: 2 / 19 / 80).
+So the decline is universal, and what varies around it is mostly
+recording-to-recording, NOT a property of the session. Group and mouse_line have no
+effect in the mixed model. GCaMP-only drift grows with `day_index` (-0.023 %/min
+per session, p = 0.001) and depends on recording order (t1 declines least, t2 most,
+then recovering toward t5; LR p < 1e-5). The fast-fluctuation SD does not shrink
+(median log2 ratio 0.00), so it is a baseline decline, not less activity; PV-group
+sessions are the exception, their fluctuations shrink slightly (see correction below).
+
+**Correction (2026-09-27): the fluctuation-ratio LR tests are unreliable.** For
+`fluct_log2_ratio` the animal variance is ~0 (on the boundary), and full and reduced
+models land on different optima even when both report `converged`: one LR came out
+-11.2, others gave p = 0.005 for a coefficient of 0.014 +- 0.017. The script's
+`group p = 0.0004` for this metric is one of those. Refitted two ways that do not
+depend on that optimum -- random intercept per SESSION only (REML, Wald) and OLS
+with standard errors clustered by animal -- they agree: PV-group shrinkage is
+about -0.06 log2 (~4 %) vs R/T, joint group Wald p = 0.020 / 0.026. **mouse_line
+has no effect** on the fluctuation ratio: +0.014 +- 0.016, p = 0.39 / 0.24 adjusted
+for group; within R p = 0.89 / 0.75, within T p = 0.20 / 0.13. Among PV-CRE animals
+only, PV group vs R/T is -0.054, p = 0.011 / 0.043, so the PV shrinkage belongs to
+the group, not the line. For this metric, trust Wald/cluster-robust tests over LR.
+Six recordings rise instead (`260708_PV5` and `260716_PV5`, t1-t3, about +1 %/min):
+their GCaMP-only drift is about 0, so the rise is the reflectance channel falling
+and the emo correction dividing it in.
+
+### 9.31 Interpreting baseline decline and cortex-wide event burden
+**Analysis caveats identified (2026-09-28); proposal, not a detector fix.**
+Section 9.30's stable fast-fluctuation SD is measured after local 20 s dF/F
+normalization. It supports separating baseline and transient activity, but does
+not establish stable raw event amplitudes or prove photobleaching as the cause.
+Local division can increase apparent late amplitudes when only the baseline
+falls; compare additive and multiplicative corrections without flattening genuine
+event-rate changes.
+
+`analyze_peak_tails_emo.py` selects the top 5% of peaks separately per recording
+and defines `Cortex_mean` as the mean of ROI means. These are descriptive tail
+and sampled-region summaries, not a common abnormal-event threshold or a
+whole-brain measurement. The proposal in
+[docs/CORTEX_ACTIVITY_EMO_PROPOSAL.md](docs/CORTEX_ACTIVITY_EMO_PROPOSAL.md)
+specifies shared event criteria, spatial recruitment, exposure-aware time-bin
+comparisons and animal-level inference. No existing pipeline behavior changes.
+
+### 9.32 Cortex/emo additive activity implementation (2026-09-28)
+
+`analyze_cortex_activity_emo.py`, `compare_cortex_activity_conditions.py` and the
+flat pilot `test_cortex_activity_emo.py` implement the agreed additive algorithm.
+Per pixel: q=F/emo; b=centered median; residual=q-b; corrected=residual+mean_valid(b).
+No reference-interval normalization, GSR or second detrend. Event metrics use the
+residual; mean_b is display-only. Masks use each recording's saved cortical ROI
+union, not the rectangular crop. Defaults are exploratory native thresholds with
+sensitivity variants, not validated epileptiform labels. Whole-animal comparisons
+use valid exposure and require shared mouse-line support; tiny pilots skip GEE.
+The inspected dump metadata lacks channel timing, so 10 Hz/index alignment is an
+explicit assumption. The known 260828_PV7/t2 exclusion remains.
+Read [usage](docs/CORTEX_ACTIVITY_EMO_USAGE.md) for commands, output schemas,
+cache fingerprints, artifact annotations and validation scope. No package API
+changes. The environment on this workstation is under USERPROFILE/miniconda3.
+
+### 9.33 `pixel_roi_editor.py` showed the first page as one giant pixel (2026-10-01)
+**Problem.** `_show_page` called `image_item.setRect(QRectF(col_0, row_0, w, h))`
+before `_refresh_background` assigned the image. pyqtgraph 0.14's `setRect` scales
+by `rect / current image size`, and with no image yet it uses size 1. So each crop
+pixel was stretched to the whole crop (87x76 -> 7569x5776 plot units), and the view
+showed a single pixel. Display only: traces, seed-r maps and saved boxes were correct.
+
+**Fix applied.** The crop is 1:1 with the full 128 grid, so the image is placed with
+`resetTransform()` + `setPos(col_0, row_0)`, which does not depend on whether an image
+is set. Verified headlessly: the item's bounds are now `(col_0, row_0, 87, 76)`.
+Rule: never call `ImageItem.setRect` before `setImage`.
+
+### 9.33 NBS connectivity had neither GSR nor drift removal; corrected variants added (2026-10-01)
+**Problem.** `R_roi` in `outputs/roi_pixel_connectivity/pixels_dff_full/` (the input of
+the three `test_nbs_*.py` scripts) is a plain Pearson r of box means of the
+mean-baseline dF/F. No GSR was ever applied anywhere in the batch chain (all 109
+manifest rows use `cerebellar_rs`; `cortical_gsr` is unused; the streaming pixel dump
+refuses GSR). So every edge carries the cortex-wide component, and the -0.55 %/min
+mean-baseline drift (9.30) adds a shared slow trend that inflates every r.
+
+**Added.** `roi_pixel_connectivity.py --gsr`: the global signal is the per-frame mean of
+the recording's ROI-box union (stand-in for Antea's brain mask), regressed out of every
+pixel by closed-form OLS (`regress_global_signal`, einsum, no BLAS), folder suffix
+`_gsr`. The NBS scripts read `NBS_CONNECTIVITY_VARIANT` (default `pixels_dff_full`,
+original outputs unchanged) and write to `outputs/nbs_<name>_<variant>/`. Built:
+`pixels_dff_full_gsr`, `pixels_median_dff_20s_full`, `pixels_median_dff_20s_full_gsr`
+(544 recordings each, ~10.5 min on 8 workers); all NBS reruns ~4 min total.
+
+**What survived (t > 2.5 unless noted; edge overlap between variants in brackets).**
+- `PV_slope` increase: 50 edges originally, 9 (mean+GSR) / 12 (median+GSR); 8-10 of
+  those are in the original. Core: V1L/V1aL with M2L_bassa, M1L_bassa, RSL_alta, and
+  V1aL/TrL with M2R. The big original component was mostly global signal.
+- `T` decrease over `day_index`: 16 orig, 44 median, 7 median+GSR; the GSR remnant is
+  RS-centred (RSL/RSR_alta with BFDL, TrL, TrR).
+- pooled decrease over `day_index`, only after GSR: M1/M2-V1 edges, 9 of 10 shared by
+  mean+GSR and median+GSR.
+- `PV_vs_R` increase, only after GSR (M1L_bassa/M2 with HLR/TrR, 8 shared): p = 0.036 is
+  the smallest attainable (28 relabellings, 2 R animals) -- fragile.
+- pre/post Boto: nothing originally; GSR variants give 2-6 edge components that do not
+  agree with each other. Treat as null.
+- `T` increase and `R_minus_T` increase appear in median+GSR only.
+
+**Caveats.** Analyses x directions x thresholds x variants are not corrected against
+each other; trust components that recur across variants. After GSR an edge change is
+relative to the global mean, and negative r are produced by construction.
+
+### 9.34 New session 260608 PV5: one download was unsynchronised, the other is clean (2026-10-02)
+**Two downloads, only one usable.** `C:\Users\loren\Downloads\PV5\PV5\t1-t5` (6000
+TIFFs each) is NOT two interleaved channels: odd and even frames have equal medians,
+and frame brightness follows a ~4-frame wave that drifts against the camera clock
+(~1 frame per 1200), so every frame position sweeps through both illuminations. LED
+controller and camera were not synchronised. Running the pipeline on it would split
+two streams that each swing between both lights. Ignored.
+`C:\Users\loren\Downloads\PV5B\PV5B\t1-t5` is a normal recording: alternating frames at
+~6000 (GCaMP) and ~15200 (reflectance), stable over the whole recording; t3 starts on
+reflectance, t5 on GCaMP (`channel_order: auto` handles it). It is not one of the four
+known PV5 sessions (closest is 260611: image r = 0.92, but fast fluctuations r < 0.1).
+The user dated it **260608**.
+
+**Set up.** A directory junction `C:\Users\loren\Downloads\WF_2026_new\260608\PV5` ->
+`PV5B\PV5B` gives the `<day>\<animal>\<t#>` layout `roi_editor.folder_key` needs (keys
+are the last 3 path parts; the raw path would give `PV5B_PV5B_t1`). The files were not
+moved. `batch_roi_select.py` RUN_CONFIG `folder` points at `WF_2026_new` and
+`start_from` at `roi_sets/rebuilt/260611_PV5_t1.yaml` (its Bregma/Lambda as the first
+guess). `manifests/botox_restani_manifest.csv` has a 72nd row, 260608 PV5, group P,
+manifest Bregma 121/134 (the saved ROI set's own Bregma wins, as for every row).
+Restore `folder` to `D:\WF_2026\starting` and `start_from` to None for the full cohort.
+
+**Watch out.** 260608 precedes PV5's first known session (260611), so once it enters
+`pixel_data/experimental_design.csv` every PV5 `day_index` shifts by one, and the
+PV-group NBS (`between_day_indices = [1, 2]`, `PV_slope`) changes for PV5.
+
+The user confirmed 260608 is PV5's day 1 (later sessions shift to 2-5). The first rerun
+(`run_botox_batch` -> caches -> design -> connectivity -> PV NBS) stopped when the Claude
+session closed: the 260608 pipeline and 20 s cache finished, `cache_median_dff.py
+--window-s 30` died with exit 0x40010004 (console closed, not a code error), nothing
+after it ran. Everything is resumable, so the next run picks up from there.
+
+**Second new session: 260520 PV4 (same setup, 2026-10-02).** `C:\Users\loren\Downloads\pv4\pv4\t1-t5`,
+6000 TIFFs each, cleanly interleaved (~7,500 GCaMP vs ~52,000 reflectance, stable over the
+recording; t1/t4/t5 start on GCaMP, t2/t3 on reflectance). **t1's files are named `pv31_#####`**,
+the rest `pv41_#####`: a filename slip, not a different animal -- t1's image matches t2-t5
+at r = 1.00. Junction `WF_2026_new\260520\PV4` -> `pv4\pv4`; manifest row 73 (260520 PV4, P).
+`batch_roi_select.py` `folder` is now `WF_2026_new\260520` (the day folder, so the editor
+shows only PV4, not 260608 PV5) and `start_from` is `roi_sets/rebuilt/260618_PV4_t1.yaml`
+(Bregma 122/132, Lambda 47). 260520 is PV4's day 1: it precedes 260618, so PV4's later
+sessions shift to day_index 2-5 too, and both PV5 and PV4 change the PV-group NBS.
+
+
+**Rerun with both new sessions (2026-10-02, `scratchpad/run_new_sessions.ps1`, 14 min, no
+errors).** 260520 PV4 ROI sets saved at Bregma 124/132, Lambda 47 (rebuild: 0.855x, 0 px
+repaired). Design: 555 recordings / 111 units, PV group 100 recordings / 6 animals; PV4 and
+PV5 now day_index 1-5 with 260520 / 260608 as day 1 (verified). Connectivity: 554 recordings
+(260828_PV7_t2 excluded), 111 units per variant. PV-group NBS, largest component, before ->
+after (t > 2.5 unless noted):
+- `PV_slope` increase grows and sharpens in every variant: mean 50 -> 100 edges (p 0.010 ->
+  0.002; 48 of the old 50 kept), mean+GSR 9 -> 20 (p 0.040 -> 0.013; 8 kept), median
+  15 -> 45 (p 0.056 -> 0.001), median+GSR 12 -> 31 (p 0.015 -> 0.0008; 11 kept). Adding
+  an earlier day 1 to two animals lengthens their slope, so this is expected to move.
+- `PV_vs_R` / `PV_vs_T` (day_index 1-2 means): edges mostly the same, p values move by one
+  relabelling step (28 relabellings -> p floor 0.036); still fragile, as 9.33 says.
+- New small `PV_slope` decrease components in the GSR variants (9 edges p = 0.098 mean+GSR;
+  3 edges at t > 3.5 p = 0.029 median+GSR), not shared between variants. Treat as noise.
+The C57-only NBS scripts (`test_nbs_pre_post_boto.py`, `test_nbs_change_over_time.py`) are
+unaffected and were not rerun. Pre-change component tables: `scratchpad/before_260608/`.
+
+
+**Third new session: 260520 PV3 (2026-10-02).** `E:\pv3\t1-t5`, 6000 TIFFs each, all named
+`pv31_#####`, file times 2026-05-20 09:07. Cleanly interleaved (~6,900 GCaMP vs ~44,400
+reflectance, stable; t1/t3 start on reflectance). Junction `WF_2026_new\260520\PV3` -> `E:\pv3`
+(a junction may cross local volumes); manifest row 74 (260520 PV3, P). `batch_roi_select.py`
+`folder` is `WF_2026_new\260520\PV3` (the animal folder, so 260520 PV4 is not shown) and
+`start_from` is `roi_sets/rebuilt/260618_PV3_t1.yaml` (Bregma 100/132, Lambda 50).
+260520 is PV3's day 1; its later sessions shift to day_index 2-5.
+**PV4's `pv31`-named t1 is PV4, not PV3 (checked).** A band-passed (sigma 1 - sigma 8)
+reflectance image separates animals cleanly: within PV3 or within PV4 r >= 0.99 across
+t1-t5, PV3 vs PV4 r = -0.03 for every pair, including PV4 t1. The earlier r = 1.00 for PV4
+was on a smooth 4x-downsampled image, which does not discriminate animals -- use the
+band-passed comparison. The files also differ (md5).
+
+
+**Rerun with 260520 PV3 (2026-10-02, `scratchpad/run_pv3.ps1`, 20 min, no errors).** ROI sets
+saved at Bregma 100/132, Lambda 49 (rebuild 0.891x, 0 px repaired). Design: 560 recordings /
+112 units, PV group 105 recordings / 6 animals; PV3, PV4 and PV5 each now day_index 1-5
+(verified). Connectivity: 559 recordings, 112 units per variant. PV-group NBS, largest
+component, before (with PV4/PV5) -> after, t > 2.5:
+- `PV_slope` increase grows again without GSR: mean 100 -> 133 edges (p 0.0018 -> 0.0010,
+  99 of 100 kept), median 45 -> 68 (p 0.001 -> 0.0004, 44 kept). With GSR it is stable:
+  mean+GSR 20 -> 21 (p 0.003, 18 kept), median+GSR 31 -> 26 (p 0.001, 22 kept).
+- `PV_slope` decrease now recurs across both GSR variants with the SAME core edges
+  V1aL-FLR, V1aL-HLR, V1L-FLR (t > 3.5: p = 0.027 mean+GSR, 0.021 median+GSR; median+GSR
+  t > 3.1 adds V1L-HLR, p = 0.034). Left visual vs right forelimb/hindlimb weakening over
+  sessions in PV. Small (3-4 edges) and only after GSR, so relative to the global mean.
+- `PV_vs_R` / `PV_vs_T`: same edges, p moves by one relabelling step (fragile, as before).
+Pre-PV3 component tables: `scratchpad/before_pv3/`. E: has 8.3 GB free after this run
+(~1.5 GB used per new session including caches).
+
+### 9.35 PV3/PV4/PV5 late session vs day 1 (`test_pv_session_vs_day1.py`, 2026-10-03)
+**Day indices moved.** After 260520 became day 1 for PV3/PV4 (9.34), 260716 PV3/PV4 is
+**day 4** and 260805 PV5 is **day 5**. Older notes calling them day 3/4 are stale.
+Each session is compared with its animal's day-1 session, using its 5 recordings and all 4 connectivity variants.
+Tests are within-animal: recordings are the replicates, exact 5-vs-5 permutation, p floor 0.008.
+Outputs are in `outputs/pv_session_vs_day1/`.
+
+**Findings.**
+- Without GSR, mean z over all edges rises in all three: dff +0.56 / +0.13 / +0.22 (PV3/PV4/PV5).
+  50 edges rise in all three animals with |t| > 2.5. With GSR the global level change is about 0
+  for PV3/PV4, so their increase is the global component (as 9.33 found for the NBS).
+- PV5 day 5 is the strongest change and it survives GSR. The left hemisphere becomes one strongly
+  coupled block (intra-left +0.53 z, every variant, p = 0.008) and decouples from the right
+  (homotopic -0.49/-0.55 z with GSR). Edge-pattern r between days is 0.68-0.79, against
+  0.96-0.98 within a session, so the pattern itself changed. That is not true of PV3/PV4
+  (0.84-0.94).
+- It is not an amplitude effect: PV5's left ROI traces have ~0.7x the right's SD on BOTH
+  days, and both sides fall ~30% on day 5. The ratio is unchanged.
+- The GSR-variant PV_slope decrease core (V1L/V1aL with FLR/HLR) falls in all three animals,
+  but PV5 dominates it (-0.5 to -0.6 z vs -0.1 to -0.2). PV5 also dominates the GSR
+  PV_slope increase. The PV_slope result after GSR therefore leans heavily on PV5's
+  lateralised change. This check is circular: these sessions are part of the NBS input.
+
+### 9.36 PV3/PV4/PV5 every day vs day 1 (`test_pv_days_vs_day1.py`, 2026-10-05)
+Same input and within-animal tests as 9.35, over days 2-5. Outputs: `outputs/pv_days_vs_day1/`.
+- **PV5 changes in one step between day 2 (260611) and day 3 (260708)**, then stays.
+  GSR intra-left z 0.34 / 0.24 / 0.95 / 0.91 / 0.88 (mean+GSR); homotopic 0.41 / 0.47 /
+  -0.12 / -0.06 / -0.07. Edge-pattern r between days 1-2 and days 3-5 is 0.65-0.82, and
+  0.92-0.98 within either block. Note day 1 -> 2 is only 3 days apart, day 2 -> 3 four weeks.
+- PV3/PV4 have no such step. Pattern r stays 0.84-0.95 across all days.
+- The V1L/V1aL-limbR core (9.34) falls gradually in all three with GSR, PV5 most.
+- Caveat: `difference_similarity.csv` correlates (day k - day 1) with (day 5 - day 1), and
+  both share the day-1 mean, so r is inflated. PV5 day 2's r ~ 0.05 shows that term is small.
+
+### 9.37 Antea's MATLAB chain can read the raw TIFFs directly; Fiji is not needed (2026-10-05)
+Antea's scripts (1)-(5) are plain MATLAB. Fiji only did two things: it split each
+recording's interleaved single-frame TIFFs into the emo/gCaMP stack pairs that script (1)
+reads, and it drew the brain `Mask` that script (2) opens with `uiopen`.
+`Antea_scripts/matlab/` replaces both:
+- `load_interleaved_folder.m` sorts the files by name, splits odd/even files, and calls the
+  dimmer group GCaMP, the same rule as `wfci.io.interleaved_channel_files`. It downsamples
+  each frame with a 0.5 box resize as it is read.
+- `script_1_correzione_emodinamica_da_tiff.m` builds `t_TEMP`.
+- `script_2a_maschera_cervello.m` draws or reads `Mask`.
+
+**Validated** on 260520/PV4/t1 with `n_trim = 20`. Both mean images equal the dump's
+`mean_f`/`mean_r` exactly. The dF/F after script (2)'s resize matches
+`pixels_dff_full.npy` to within float16 rounding (max 0.008 pp).
+
+Notes:
+- MATLAB R2024a is installed on the `loren` machine:
+  `"C:\Program Files\MATLAB\R2024a\bin\matlab.exe" -batch "run('<file>.m')"`.
+- Antea's `y_1`/`x_2` are `floor(bregma_row/2)`/`floor(bregma_col/2)` from
+  `roi_sets/rebuilt/*.yaml`; they equal the dump metadata's `y_1`/`x_2`.
+- Script (1) does not trim frames, but the Python pipeline drops 20 per channel.
+
+**ROI sets in MATLAB, and the GSR difference (2026-10-05).** `read_roi_set.m` reads
+`roi_sets/rebuilt/*.yaml`, and `script_4_correlazione_roi_set.m` replaces (3)+(4) with
+each recording's own boxes and Bregma. The box convention is Antea's exactly: her
+offsets are `cortex22_roi_set.yaml`. `script_2a` adds a `'roi_union'` mask. Full chain on
+260520/PV4/t1: **without GSR** the r matrix equals `pixels_dff_full` `R_roi` to 2.3e-6.
+**With GSR it differs by up to 0.13.** Antea's script (2) builds the global signal as
+`nanmean(nanmean(data,1),2)`: the mean of the column means, which is not the pixel mean
+for a non-rectangular mask (here 64 columns with 6-30 pixels each). `wfci.gsr.global_signal`
+and `roi_pixel_connectivity.regress_global_signal` both take the pixel mean. The
+`wfci.gsr` docstring says the two "agree exactly" on clean data, which is false unless
+every mask column has the same pixel count. Recomputing the column-mean version in Python
+reproduces MATLAB to 1.6e-5. The Python `_gsr` variants are therefore close to Antea's GSR
+but not equal to it. Not changed (it would move every `_gsr` result); ask before switching.
+
+### 9.38 GSR global signal is now Antea's column mean everywhere; pixel_data in MATLAB (2026-10-05)
+**Default changed.** The plain pixel mean in Python was not Antea's script (2) (see 9.37).
+The global signal is now `nanmean(nanmean(data,1),2)` by default in three places:
+- `roi_pixel_connectivity.py` (`gsr_global_mean` / `--gsr-global-mean`, default `column`);
+- `wfci.gsr` (`GSRConfig(global_mean="column")`, `global_signal(..., global_mean)`, and the
+  shared `spatial_mean`);
+- the streaming GSR in `wfci.streaming`.
+
+The old version is `pixel`; its connectivity goes to `_gsr_pixelmean` folders. The tests
+had missed the difference because their masks removed whole columns, and on such a mask
+the two means are equal. New tests use irregular masks. Suite: 322 passed.
+
+**Recomputed.** The two `roi_pixel_connectivity/*_gsr` variants were rebuilt (559
+recordings each, 10.6 min on 8 workers). The old ones were renamed `*_gsr_pixelmean`, not
+deleted, and so were the six NBS `_gsr` output folders. Then all three NBS scripts (both
+time axes for change_over_time; set `NBS_TIME_VARIABLE=days_since_first_session` for the
+second) and the four `test_pv_*` scripts were rerun. New `_gsr` R_roi on 260520/PV4/t1
+equals Antea's MATLAB chain to 1.6e-5 (float16).
+
+**What moved (largest components, t > 2.5 unless noted).**
+- `PV_slope` increase grew: mean+GSR 21 -> 31 edges (p 0.003 -> 0.0002, 20 kept),
+  median+GSR 26 -> 39 (p 0.001 -> 0.0002, all 26 kept).
+- `PV_slope` decrease and `PV_vs_R` barely moved. `PV_vs_R` is still at its 28-relabelling
+  p floor.
+- `change_over_time` pooled decrease is unchanged (9 of 10 edges, p 0.007).
+- Several small pre/post-Boto and T components that were near p 0.05 lost it (e.g. T
+  increase t > 3.5 p 0.045 -> 0.20). A median+GSR `R_vs_T_postBoto` increase appeared
+  (14 edges, p 0.05). These were already flagged as fragile in 9.33.
+
+**PV metrics.**
+- The non-GSR variants are unchanged.
+- PV5's day 2 -> 3 step is unchanged: intra-left 0.29 / 0.22 / 0.92 / 0.89 / 0.83
+  (mean+GSR); homotopic about 0.45 -> -0.1.
+- The V1L/V1aL-limbR core is 0.1-0.2 z higher everywhere but still declines over sessions
+  in all three animals, most in PV5 (-0.32 -> -0.79).
+
+**pixel_data in MATLAB.**
+- `Antea_scripts/matlab/read_npy.m` reads `.npy` and decodes float16 itself.
+- `load_pixel_dump.m` puts the 76x87 crop back on the 128 grid (NaN outside) and reads the
+  `.npz` metadata through `unzip`.
+- `script_1b_da_pixel_data.m` builds `t_TEMP_resized`.
+- `script_2_gsr_da_128.m` is Antea's (2) without the uiopen and without the first resize.
+
+On 260520/PV4/t1 this route equals the raw-TIFF route to 2.3e-6 (no GSR) and 1.6e-5 (GSR).
+A drawn mask that reaches past the crop only uses its part inside the crop.
+
+**MATLAB figures (2026-10-05).** `Antea_scripts/matlab/make_pv_figures.m` runs the whole
+chain in MATLAB for PV3/PV4/PV5, days 1-5:
+pixel_data -> `antea_gsr.m` (her script (2) loop, ROI-union mask) -> each recording's ROI
+set -> `corr` -> `mean(R,3)`.
+It writes `outputs/pv_matlab_figures/{matrices,difference}_pixels_dff_full_{gsr,no_gsr}.png`
+and `mean_R_*.mat`. `mean_R` equals the Python connectivity (plain mean of `R_roi`) to
+3e-15 in all 15 sessions, with and without GSR. Runtime: 7.1 min with GSR, 0.9 min without.
+`recompute = false` reuses the saved .mat and only redraws.
+Batch-MATLAB gotcha: a figure is clipped to the screen size, so `exportgraphics` gave small
+panels. Set PaperPosition/PaperSize and use `print(..., '-r200')` instead.
+
+### 9.39 Frame montages for every animal; what GSR does to the slow decline (2026-10-05)
+**Montages.** `plot_frame_montages_by_animal.py` draws, for each of the 26 animals, 10
+figures, one per peak rank, with one panel per session (t1). Each is drawn twice from the
+same frames: mean-baseline dF/F without GSR and with GSR (ROI-union column mean).
+Output: `outputs/frame_montages/by_animal/{no_gsr,gsr}/<animal>/`, 520 PNG, 557 MB, plus
+`peaks.csv` (1120 peaks, 10 per session). About 2 min on 8 workers.
+
+Peaks are ranked on the field mean minus its 20 s running median. The raw mean-baseline
+maximum always falls in the first seconds (9.30). Peaks are at least 3 s apart, and the
+first and last 10 s are skipped.
+
+`plot_frame_montage.py` gained `field_mean_trace`, `ranked_peak_frames` and
+`draw_montage_figure` (the drawing moved out of `main()`). Its own output is unchanged:
+same frames and colour limits. The saved `T9_t1_peak.png` differs only in panel spacing,
+from an older version of the script. `plot_frame_montage.py` is untracked, so there is no
+git baseline for it.
+
+**GSR and the slow decline, measured on 8 recordings.** GSR removes 80-90 % of a pixel's
+linear trend (median |slope| 0.27-0.97 -> 0.08-0.17 % dF/F/min, inside and outside the ROI
+union alike) but not all of it, because each pixel's slope against the global signal is fitted over
+the whole recording, so only the part of its drift proportional to the global drift goes.
+Where the shared drift is small (260709_T9/t1, field slope -0.16) GSR barely changes the
+pixel trends (0.20 -> 0.15): what is left there is pixel-specific. GSR also removes genuine
+cortex-wide activity: a whole-field flash becomes a near-flat or inverted frame.
+
+**Git here** needs `git -c safe.directory=E:/Developing_projects/letizia ...` (dubious
+ownership: the repo was created under another user SID). This is a per-command flag; the
+global config was not changed.

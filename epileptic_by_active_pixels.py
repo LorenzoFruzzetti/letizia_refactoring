@@ -46,9 +46,9 @@ Detection
     Unchanged: `run_analysis` from epileptic_by_area_animal_day.py detrends each
     trace, smooths it (the "amplitude"), takes the rise, and flags peaks against
     one z cut-off pooled over every recording. Both amplitude and rise therefore
-    come from the active-pixel fraction. The rise is taken from the SMOOTHED
-    fraction by default (`--rise-on-smoothed`); `--no-rise-on-smoothed` takes it
-    from the detrended, unsmoothed fraction instead. The output folder is named
+    come from the active-pixel fraction. The rise is taken from the detrended,
+    unsmoothed fraction by default (`--no-rise-on-smoothed`); `--rise-on-smoothed`
+    takes it from the smoothed fraction instead. The output folder is named
     for that choice, so the two runs do not overwrite each other.
 
     One extra condition for an epileptiform peak: `--epileptic-min-signal`
@@ -89,23 +89,26 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import yaml
 
 from cache_median_dff import cache_paths
 from epileptic_by_area_animal_day import run_analysis
-from epileptic_by_area_animal_day_pixels import crop_slices, nonnegative, plot_count, roi_categories
+from epileptic_by_area_animal_day_pixels import (crop_slices, nonnegative, plot_count, recording_roi_set,
+                                                  roi_categories, roi_output_suffix)
 
 REPO_ROOT = Path(__file__).resolve().parent
 
 # Edit this section to run the analysis without passing CLI flags.
 RUN_CONFIG: dict[str, Any] = {
     "pixel_root": REPO_ROOT / "pixel_data",
-    "input_root": REPO_ROOT / "outputs/botox_restani_rebuilt",  # batch_summary.csv
+    "input_root": REPO_ROOT / "outputs/epileptic_groups",  # Both cohorts' day/animal/group table.
     # None: outputs/epileptic_by_active_pixels_<dff_source>_rise_<smoothed|detrended>
     # (+ _bottom<N>sd with the bottom-percentile scale), so variants do not overwrite each other.
     "output_dir": None,
+    # None: each dump's own ROI set. A folder: per-recording sets drawn with
+    # pixel_roi_editor.py; the output folder then gets a _roi_<folder name> suffix.
+    "roi_set_dir": None,
     "dff_source": "median_dff",  # "median_dff" (cache_median_dff.py) or "pipeline_dff"; see docstring.
-    "baseline_window_s": 20.0,  # Which median_dff cache to read (it is named for its window).
+    "baseline_window_s": 60.0,  # Which median_dff cache to read (it is named for its window).
     # A pixel is active above this many robust SDs of its own trace. 3 fails: the
     # fraction is then 0 in most frames and has no robust SD (CLAUDE.md 9.23).
     "pixel_z_threshold": 2.0,
@@ -127,15 +130,15 @@ RUN_CONFIG: dict[str, Any] = {
     "detection": {
         "sampling_rate_hz": 10.0,  # Per-channel rate, after splitting the channels.
         "median_window_s": 20.0,  # Running median removed as the slow trend.
-        "smooth_window_s": 1.0,  # Rolling mean applied before finding peaks.
+        "smooth_window_s": 10.0,  # Rolling mean applied before finding peaks.
         "min_event_distance_s": 0.5,  # Minimum spacing between peaks in one trace.
         "amplitude_prominence_sd": 3.0,  # Lower = admit smaller amplitude peaks.
         "rise_prominence_sd": 3.0,  # Lower = admit less prominent rise peaks.
         "rise_window_s": 0.5,  # Interval over which the rise is measured.
         "not_linear_rise": True,  # True: window max-min; False: endpoint change.
-        "rise_on_smoothed": True,  # True: rise of the smoothed fraction; False: of the detrended one.
-        "rise_lead_s": 1.0,  # Allowed rise time before the amplitude peak.
-        "rise_lag_s": 0.3,  # Allowed rise time after the amplitude peak.
+        "rise_on_smoothed": False,  # True: rise of the smoothed fraction; False: of the detrended one.
+        "rise_lead_s": 10.0,  # Allowed rise time before the amplitude peak.
+        "rise_lag_s": 5.0,  # Allowed rise time after the amplitude peak.
         "epileptic_require_confirmed": True,  # Require a concurrent rise peak.
         # An epileptiform peak also needs at least this fraction of the hemisphere's
         # pixels active at the peak frame (raw fraction, before detrending and
@@ -246,7 +249,8 @@ class ActivePixelTraceLoader:
     """
 
     def __init__(self, output_root, *, pixel_z_threshold=3.0, dff_source="median_dff",
-                 baseline_window_s=20.0, pixel_scale="mad", pixel_scale_percentile=50.0):
+                 baseline_window_s=20.0, pixel_scale="mad", pixel_scale_percentile=50.0,
+                 roi_set_dir=None):
         if not np.isfinite(pixel_z_threshold):
             raise ValueError("pixel_z_threshold must be finite")
         if dff_source not in DFF_SOURCES:
@@ -261,6 +265,8 @@ class ActivePixelTraceLoader:
         self.pixel_z_threshold = float(pixel_z_threshold)
         self.dff_source = dff_source
         self.baseline_window_s = float(baseline_window_s)
+        # None: each dump's own ROI set; otherwise per-recording sets from this folder.
+        self.roi_set_dir = roi_set_dir
         self.cached = {}
         # Area and hemisphere of each trace, handed to run_analysis for the tables.
         self.categories = {name: (AREA_NAME, side) for side, name in TRACE_NAMES.items()}
@@ -278,16 +284,8 @@ class ActivePixelTraceLoader:
         if meta["n_written"] != meta["n_time"] or meta["n_time"] <= 0:
             raise ValueError(f"Incomplete pixel dump: {metadata_path}")
 
-        # The recording's own atlas: same checks as the ROI-mean pixel script.
-        atlas_path = Path(meta["roi_set"])
-        if not atlas_path.is_absolute():
-            atlas_path = REPO_ROOT / atlas_path
-        atlas = yaml.safe_load(atlas_path.read_text(encoding="utf-8"))
-        if list(atlas["grid"]) != meta["grid"]:
-            raise ValueError(f"Atlas and pixel grid differ: {atlas_path}")
-        for key in ("bregma_row", "bregma_col", "downsample"):
-            if atlas[key] != meta[key]:
-                raise ValueError(f"Atlas {key} differs from saved metadata: {atlas_path}")
+        # The recording's atlas (or its override): same checks as the ROI-mean pixel script.
+        atlas_path, atlas = recording_roi_set(meta, self.roi_set_dir)
 
         region = meta.get("region", [0, meta["grid"][0], 0, meta["grid"][1]])
         volume_path = dff_volume_path(folder, self.dff_source, self.baseline_window_s)
@@ -335,6 +333,9 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
                         help="Directory containing batch_summary.csv (group assignments)")
     parser.add_argument("--output-dir", type=Path, default=defaults["output_dir"],
                         help="Default: outputs/epileptic_by_active_pixels_<dff_source>_rise_<smoothed|detrended>")
+    parser.add_argument("--roi-set-dir", type=Path, default=defaults["roi_set_dir"],
+                        help="Folder of per-recording ROI sets (pixel_roi_editor.py) used instead of "
+                             "each dump's own; the output folder gets a _roi_<folder> suffix")
     parser.add_argument("--dff-source", choices=DFF_SOURCES, default=defaults["dff_source"],
                         help="median_dff: cache_median_dff.py volume; pipeline_dff: run_botox_batch's dump")
     parser.add_argument("--baseline-window-s", type=float, default=defaults["baseline_window_s"],
@@ -384,6 +385,7 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         pixel_root=Path(config["pixel_root"]),
         input_root=Path(config["input_root"]),
         output_dir=config["output_dir"],
+        roi_set_dir=config["roi_set_dir"],
         dff_source=config["dff_source"],
         baseline_window_s=float(config["baseline_window_s"]),
         pixel_z_threshold=float(config["pixel_z_threshold"]),
@@ -406,6 +408,7 @@ def main():
     if args.output_dir is None:
         args.output_dir = default_output_dir(args.dff_source, args.detection["rise_on_smoothed"],
                                              args.pixel_scale, args.pixel_scale_percentile)
+        args.output_dir = args.output_dir.with_name(args.output_dir.name + roi_output_suffix(args.roi_set_dir))
     args.pixel_root, args.input_root, args.output_dir = map(
         Path, (args.pixel_root, args.input_root, args.output_dir))
     if not np.isfinite(args.debug_width_scale) or args.debug_width_scale <= 0:
@@ -426,7 +429,8 @@ def main():
                                     dff_source=args.dff_source,
                                     baseline_window_s=args.baseline_window_s,
                                     pixel_scale=args.pixel_scale,
-                                    pixel_scale_percentile=args.pixel_scale_percentile)
+                                    pixel_scale_percentile=args.pixel_scale_percentile,
+                                    roi_set_dir=args.roi_set_dir)
     rise_source = "smoothed" if args.detection["rise_on_smoothed"] else "detrended"
     dff_description = (f"median dF/F ({args.baseline_window_s:g} s running-median baseline, cached)"
                        if args.dff_source == "median_dff" else "run_botox_batch dF/F (mean baseline)")
@@ -440,6 +444,7 @@ def main():
                           f"{args.pixel_z_threshold:g} {scale_short} of the pixel's own trace; "
                           f"rise from the {rise_source} fraction")
     print(f"Signal: {signal_description}")
+    print(f"ROI sets: {args.roi_set_dir or 'each dump own (meta roi_set)'}")
     print(f"Output: {args.output_dir}")
     run_analysis(input_root=args.input_root, output_dir=args.output_dir,
                  recording_paths=paths, recording_limit=args.recording_limit,
@@ -458,6 +463,8 @@ def main():
                                  pixel_scale_percentile=(args.pixel_scale_percentile
                                                          if args.pixel_scale == "bottom_percentile" else None),
                                  pixels_counted="union of the recording's atlas boxes, per hemisphere",
+                                 roi_set_dir=(None if args.roi_set_dir is None
+                                              else str(Path(args.roi_set_dir).resolve())),
                                  pixel_root=str(args.pixel_root.resolve())),
                  **args.detection)
 

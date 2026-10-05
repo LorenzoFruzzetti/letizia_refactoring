@@ -229,10 +229,14 @@ valid_from_mask(mask, threshold=0.0) -> bool[y,x] # keep mask > threshold
 apply_mask(stack, mask, threshold=0.0) -> stack   # outside -> NaN, all frames/trials
 
 # Global signal regression (cortical stage 2)
-GSRConfig(nan_policy="drop_pixel", min_variance=0.0)
+GSRConfig(nan_policy="drop_pixel", min_variance=0.0, global_mean="column")
     # "drop_pixel": any NaN frame -> pixel NaN everywhere (MATLAB's ~isnan).
     # "per_frame" is reserved and raises NotImplementedError.
-global_signal(stack[y,x,time]) -> [time]          # spatial mean over FINITE pixels
+global_signal(stack[y,x,time], global_mean="column") -> [time]
+    # spatial mean over FINITE pixels. "column" (default) = MATLAB's
+    # nanmean(nanmean(data,1),2): mean of the column means. "pixel" = plain
+    # pixel mean; equal only when every column holds the same number of valid
+    # pixels (CLAUDE.md 9.37). The streaming GSR uses the same spatial_mean().
 regress_global(stack[y,x,time], cfg=None, g=None) -> [y,x,time]
     # closed-form per-pixel OLS: a=cov(g,p)/var(g), b=mean(p)-a*mean(g);
     # residual = p - a*g - b. Replaces 16384 fitlm calls/trial.
@@ -409,7 +413,9 @@ significance_barplot(masked, labels=None, *, sign="negative", ax=None, color=Non
     -> Axes
 ```
 
-`wfci` does **not** compute NBS — you pass an adjacency in. Colours/positions are
+`wfci` does **not** compute NBS — you pass an adjacency in (the separate `nbs`
+package in `src/nbs/` computes one: `nbs(...).significant[i].adjacency`; see
+REFERENCE.md). Colours/positions are
 arguments (the study's choice), with sensible diverging defaults.
 
 ---

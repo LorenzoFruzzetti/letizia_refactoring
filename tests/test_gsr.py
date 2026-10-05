@@ -275,3 +275,31 @@ if __name__ == "__main__":
     import sys
 
     sys.exit(pytest.main([__file__, "-s", "-v"]))
+
+
+def test_global_signal_column_mean_is_matlab_nested_nanmean_on_an_irregular_mask():
+    """Default "column": MATLAB's nanmean(nanmean(data,1),2) exactly, which on a
+    mask whose columns hold different pixel counts is NOT the pixel mean."""
+    rng = np.random.default_rng(11)
+    stack = rng.standard_normal((5, 4, 30)) + 2.0
+    irregular = np.ones((5, 4), dtype=bool)
+    irregular[1:, 0] = False          # column 0 keeps 1 pixel, the others 5
+    irregular[3:, 2] = False          # column 2 keeps 3 pixels
+    stack[~irregular, :] = np.nan
+
+    nested = np.nanmean(np.nanmean(stack, axis=0), axis=0)
+    np.testing.assert_allclose(global_signal(stack), nested, atol=1e-12)
+    pixel_mean = np.nanmean(stack.reshape(-1, 30), axis=0)
+    np.testing.assert_allclose(global_signal(stack, "pixel"), pixel_mean, atol=1e-12)
+    assert np.abs(nested - pixel_mean).max() > 1e-3
+
+    # regress_global follows GSRConfig.global_mean.
+    for mode, g in (("column", nested), ("pixel", pixel_mean)):
+        out = regress_global(stack, GSRConfig(global_mean=mode))
+        valid = out[irregular]                                   # (n_valid, time)
+        np.testing.assert_allclose(valid @ (g - g.mean()), 0.0, atol=1e-9)
+
+
+def test_an_unknown_global_mean_is_rejected():
+    with pytest.raises(ValueError, match="global_mean"):
+        GSRConfig(global_mean="median")

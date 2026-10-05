@@ -43,6 +43,25 @@ al., "Microglial extracellular vesicles induce Alzheimer's disease-like changes"
 
 ## Entrypoints
 
+Cortex activity relative to emo is implemented with additive per-pixel median
+correction. See the [run guide](docs/CORTEX_ACTIVITY_EMO_USAGE.md) and
+[scientific proposal](docs/CORTEX_ACTIVITY_EMO_PROPOSAL.md).
+
+```powershell
+conda run --no-capture-output -n letizia python -u test_cortex_activity_emo.py
+conda run --no-capture-output -n letizia python -u analyze_cortex_activity_emo.py
+conda run --no-capture-output -n letizia python compare_cortex_activity_conditions.py
+```
+
+The pilot reads one recording per group; the cohort runner reads
+`pixel_data/experimental_design.csv`, raw float32 GCaMP/emo NumPy volumes,
+metadata and their saved ROI YAMLs. Outputs are tables, trace archives, spatial
+maps and diagnostics under `outputs/cortex_activity_emo_pilot/` or
+`outputs/cortex_activity_emo/`. Existing caches are unchanged. Detection thresholds
+are exploratory common native ratio values. Edit `RUN_CONFIG`, or use
+`--config examples/cortex_activity_emo_pilot.json`; see the guide for schemas,
+resuming, exclusions, tests and statistical support restrictions.
+
 Commands assume the repository root and the `letizia` conda environment (see
 [Environment setup](#environment-setup)). On this machine `conda` is invoked
 via its full path:
@@ -72,12 +91,32 @@ CONDA="$USERPROFILE/anaconda3/condabin/conda.bat"   # Git Bash
 | Run the manifest batch, the same ROIs for every session | `conda run -n letizia python run_botox_batch.py --roi-set roi_sets/shared_roi_set.yaml --full` |
 | Run the manifest batch as ONE concatenated trial per animal (instead of one per `t#`) | `conda run -n letizia python run_botox_batch.py --merge-recordings --full` |
 | Epileptiform events of every recording in `outputs/botox_restani_rebuilt`, tabulated by area, animal and day (edit the parameters at the top of the file) | `conda run --no-capture-output -n letizia python epileptic_by_area_animal_day.py` |
+| That detection on ONE `roi_fluorescence_full.csv`, split by area, with the events rastered (edit `csv_path` at the top of the file) | `conda run --no-capture-output -n letizia python test_roi_mean_detection.py` |
 | Line plot of total epileptiform events per animal per recording day, coloured by group (needs the table above) | `conda run --no-capture-output -n letizia python plot_epileptic_per_animal_day.py` |
 | Sampled per-ROI comparison of the starting signal and the detection, from a saved pixel analysis | `conda run --no-capture-output -n letizia python plot_pixel_detection_comparisons.py --sample-count 5` |
 | The same detection on the saved pixel dumps, correcting each pixel for reflectance against a 20 s running-median baseline, all 22 atlas ROIs | `conda run --no-capture-output -n letizia python epileptic_by_area_animal_day_pixels.py` |
 | Cache that per-pixel median-baseline dF/F for every dump, once (float16, 8 parallel workers, ~20 min, ~21.5 GB into `pixel_data/`) | `conda run --no-capture-output -n letizia python cache_median_dff.py` |
+| Seed-based connectivity on the whole pixel crop: each of the 22 ROI traces correlated (Pearson) with every pixel of `pixels_dff_full.npy`, per recording, then Fisher-z averaged per animal-day and per group; `.npz` maps and `seed_maps.png` figures in `outputs/roi_pixel_connectivity/pixels_dff_full/` (~10 min, `260828_PV7/t2` excluded) | `conda run --no-capture-output -n letizia python -u roi_pixel_connectivity.py` |
+| Same, with global signal regression first (the ROI-union mean regressed out of every pixel, as in Antea's script (2), including her mean-of-column-means global signal; `--gsr-global-mean pixel` gives the plain pixel mean in `_gsr_pixelmean`); r is then centred near zero; outputs in `outputs/roi_pixel_connectivity/<volume stem>_gsr/` | `conda run --no-capture-output -n letizia python -u roi_pixel_connectivity.py --gsr --workers 8` |
+| Hand-pick ROIs on the saved pixel dumps, looking at the computed signal (mean F, temporal SD, seed r of the selected box, single frames; live box trace below). Draw ROIs once on one recording, `A` places them on every recording by its own Bregma and Lambda (from `roi_editor.py`), `S` writes `roi_sets/pixel_selected/<day>_<animal>_<t#>.yaml` + `_template.yaml` |
+| Re-apply that one selection to every recording without the window (e.g. after new dumps) | `conda run --no-capture-output -n letizia python pixel_roi_editor.py --apply-template roi_sets/pixel_selected/_template.yaml` | `conda run --no-capture-output -n letizia python pixel_roi_editor.py` |
+| Browse the PV3/PV4/PV5 connectivity matrices (mean R per day, and day N - day 1) with a live colour scale: min/max sliders per tab, colormap picker incl. MATLAB's parula, a reference-image pane for matching a published figure; Save writes a PNG + the settings JSON to `outputs/pv_matrix_viewer/` | `conda run --no-capture-output -n letizia python pv_matrix_viewer.py --variant pixels_dff_full_gsr --reference path	oigure.png` | `pv_matrix_viewer.py` (edit `RUN_CONFIG`) |
+| Re-run a pixel analysis on those ROIs instead of each dump's own set (same flag on `epileptic_by_active_pixels.py` and `roi_pixel_connectivity.py`); outputs go to a `_roi_pixel_selected`-suffixed folder | `conda run --no-capture-output -n letizia python epileptic_by_area_animal_day_pixels.py --roi-set-dir roi_sets/pixel_selected` |
+| Left vs right hemisphere traces for every dump, one figure per recording: mean-baseline dF/F0, 20 s and 60 s median-baseline dF/F, emo-corrected (`hemisphere_traces.{png,csv}`, needs both median caches) and GCaMP-only without emo correction (`hemisphere_traces_gcamp_only.{png,csv}`), in `outputs/hemisphere_traces/<date>_<animal>/<t#>/`; `--figures gcamp_only` draws just one | `conda run --no-capture-output -n letizia python plot_hemisphere_traces.py` |
+| Filmstrip montage of consecutive dF/F frames, one labelled panel per condition (e.g. BL/3D/15D/30D), shared colour scale; strip starts at a given time or at the field-mean peak (`outputs/frame_montages/<name>.{png,json}`) | `conda run --no-capture-output -n letizia python plot_frame_montage.py --panel BL=260709_T9/t1@peak --panel 3D=260716_T9/t1@120` |
+| Filmstrip montages for every animal: one figure per animal and peak rank (its 10 largest field-wide peaks, ranked after removing the slow trend), one panel per session (t1), mean-baseline dF/F with and without GSR (ROI-union column mean); writes `outputs/frame_montages/by_animal/{no_gsr,gsr}/<animal>/` and `peaks.csv`. `--figure-per session` instead draws one figure per session and peak (10 per day), e.g. `--animals PV3 PV4 PV5 --figure-per session --output-dir outputs/frame_montages/pv_by_day` | `conda run --no-capture-output -n letizia python plot_frame_montages_by_animal.py` | `plot_frame_montages_by_animal.py` (edit `RUN_CONFIG`) |
+| Tails of the peak-height distribution for every dump: 60 s median dF/F averaged in the 22 atlas ROIs (+ cortex/hemisphere means), `scipy.signal.find_peaks` at a deliberately low prominence (0.1 % dF/F), the top 5 % of each trace's peaks, first 20 s skipped (onset artifact), `260828_PV7/t2` excluded; tables and group/day/ROI figures in `outputs/peak_tails_60s/` (needs the 60 s cache, ~3 min) | `conda run --no-capture-output -n letizia python -u analyze_peak_tails.py` |
+| The same tails with the emo (reflectance) normalisation instead of dF/F, `signal_mode` choosing the baseline: `"raw"` is the per-pixel GCaMP/emo ratio as a percentage of each recording's own median (no trend removed), `"detrended"` divides it by its own 60 s running median (ONE high-pass, against the two of the dF/F path). Same detector, same top 5 %; reports the drift left in and compares every recording against the other runs. Tables and figures in `outputs/peak_tails_emo_ratio/` and `outputs/peak_tails_emo_ratio_detrended60s/` (reads the raw F dumps, ~40 min once, then both modes reuse `roi_traces.npz`) | `conda run --no-capture-output -n letizia python -u analyze_peak_tails_emo.py` |
+| Groups-only `batch_summary.csv` for all 109 units, from both manifests (needed when the connectivity summary lacks a cohort, e.g. September batched on another machine) | `conda run --no-capture-output -n letizia python build_epileptic_groups.py` |
+| Experimental design table: one row per recording in `pixel_data/`, with group (`PV`/`R`/`T`), mouse line (`PV-CRE`/`C57`) and the within-animal session number (`day1`, `day2`, ...) | `conda run --no-capture-output -n letizia python build_experimental_design.py` |
+| Within-recording drift of the hemisphere traces (slope of the mean-baseline dF/F, emo-corrected and GCaMP-only, plus the change in fast-fluctuation SD) against every column of `pixel_data/experimental_design.csv`: variance partition animal / session / recording, mixed model with a likelihood-ratio test per design term, Kruskal-Wallis and Friedman tests; tables and figures in `outputs/drift_vs_design/` (needs `outputs/hemisphere_traces/`, ~1 min) | `conda run --no-capture-output -n letizia python -u test_drift_vs_design.py` |
+| Network-Based Statistic on the 22x22 ROI connectivity over sessions, C57 R and T only: per-session Fisher-z mean of `R_roi`, within-animal slope over `day_index` (or calendar days), pooled / R / T / R-T, both directions, t > 2.5 / 3.1 / 3.5, 5000 within-animal permutations; `components.csv` and figures in `outputs/nbs_change_over_time/<time_variable>/` (needs `outputs/roi_pixel_connectivity/pixels_dff_full/`, ~1 min). Set `NBS_CONNECTIVITY_VARIANT` (e.g. `pixels_dff_full_gsr`, `pixels_median_dff_20s_full`, `pixels_median_dff_20s_full_gsr`) to read another connectivity folder; outputs then go to `outputs/nbs_change_over_time_<variant>/`. `NBS_TIME_VARIABLE` overrides `time_variable` | `conda run --no-capture-output -n letizia python -u test_nbs_change_over_time.py` |
+| Network-Based Statistic, preBoto (`day_index` 1-3) vs postBoto (`day_index` >= 4) on the 22x22 ROI connectivity, C57 R and T only: per-session Fisher-z mean of `R_roi`, within-animal pre/post indicator (animal dummies), pooled / R / T / R-T, plus R vs T inside each period on per-animal period means (exact group-label permutations; postBoto is 3 vs 3 = 20 relabellings, min p 0.05, descriptive only), both directions, t > 2.5 / 3.1 / 3.5; `components.csv`, `animal_periods.csv` and figures in `outputs/nbs_pre_post_boto/` (needs `outputs/roi_pixel_connectivity/pixels_dff_full/`, ~1 min). Set `NBS_CONNECTIVITY_VARIANT` (e.g. `pixels_dff_full_gsr`, `pixels_median_dff_20s_full`, `pixels_median_dff_20s_full_gsr`) to read another connectivity folder; outputs then go to `outputs/nbs_pre_post_boto_<variant>/`. | `conda run --no-capture-output -n letizia python -u test_nbs_pre_post_boto.py` |
+| Network-Based Statistic of the PV group on the 22x22 ROI connectivity, PV-CRE line only (every PV animal is PV-CRE, so the line is held fixed): `PV_slope` = within-animal slope over `day_index` in PV3-PV8 (animal dummies, within-animal permutations), and `PV_vs_R` / `PV_vs_T` / `PV_vs_RT` = PV vs the PV-CRE R (R6, R7) and T (T9-T14) animals, one mean per animal over `day_index` 1-2 (exact group-label permutations; PV vs R is 6 vs 2 = 28 relabellings, min p 0.036); `260828_PV7_t2` excluded (§9.23/§9.27); both directions, t > 2.5 / 3.1 / 3.5; `components.csv`, `animal_means.csv` and figures in `outputs/nbs_pv_group/` (needs `outputs/roi_pixel_connectivity/pixels_dff_full/`, ~1 min). Set `NBS_CONNECTIVITY_VARIANT` (e.g. `pixels_dff_full_gsr`, `pixels_median_dff_20s_full`, `pixels_median_dff_20s_full_gsr`) to read another connectivity folder; outputs then go to `outputs/nbs_pv_group_<variant>/`. | `conda run --no-capture-output -n letizia python -u test_nbs_pv_group.py` |
 | The same detection on the **number of active pixels** per hemisphere instead of ROI means (needs the cache above; 1.5 SD pixel threshold, `260828_PV7/t2` excluded by default) | `conda run --no-capture-output -n letizia python epileptic_by_active_pixels.py` |
+| The active-pixel detection on ONE dump folder, with the pixel maps drawn (edit `dump_folder` at the top of the file) | `conda run --no-capture-output -n letizia python test_active_pixel_detection.py` |
 | Runnable example on sample data | `conda run -n letizia python examples/run_example.py` |
+| Network-Based Statistic demo (`nbs` package, synthetic 22-node data with a planted effect, 3 primary thresholds) | `conda run --no-capture-output -n letizia python examples/nbs_synthetic_example.py` |
 | Worked group-contrast study (cohort → DIFF → figures) | `conda run -n letizia python experiments/healthy_vs_disease_day4.py` |
 | Benchmark all 4 layouts (RAM, time, cross-layout + MATLAB parity) | `conda run -n letizia python benchmarks/benchmark_modalities.py` |
 | Estimate time + RAM for a full folder from short debug runs | `conda run -n letizia python benchmarks/benchmark_scaling.py --folder "\\\\server\\share\\animal\\t1" --limits 200,300,400` |
@@ -522,6 +561,12 @@ recordings are skipped, so an interrupted run resumes; `--overwrite` rebuilds.
 545 recordings take 107 min serially, 29 min on 4, 21 on 8, 17 on 12 and 13 on 20
 workers, at ~1.1 GB RAM per worker.
 
+Group labels come from `<input_root>/batch_summary.csv`, and every unit in
+`pixel_data/` needs one. When the connectivity summary does not cover them all,
+`build_epileptic_groups.py` writes `outputs/epileptic_groups/batch_summary.csv`
+(`day,animal,group`, from every manifest) and the run takes
+`--input-root outputs/epileptic_groups`.
+
 `epileptic_by_active_pixels.py` runs the same cohort detector on a different
 signal: for each hemisphere, the **fraction of pixels inside the union of the
 recording's atlas boxes whose dF/F exceeds `--pixel-z-threshold` robust SDs of
@@ -574,6 +619,98 @@ the same cohort tables and figures, plus per recording
 `active_pixel_fraction.csv` (`trial`, `frame`, the two fractions),
 `active_pixel_geometry.json` (volume, threshold, boxes, counted pixels, pixels
 dropped for a zero scale, pixel scale used) and the `epileptic_detection/` files described above.
+
+#### Hand-selected ROIs on the pixel dumps (`pixel_roi_editor.py`)
+
+Once `pixel_data/` exists, ROIs no longer have to be fixed before the batch: any
+rectangle inside the saved 76 x 87 crop can be averaged from the dumped pixels.
+`pixel_roi_editor.py` (pyqtgraph, like `roi_editor.py`) opens one page per
+recording, draws the crop at its full-grid position with the recording's boxes on
+top, and plots the selected box's mean trace (and its bilateral twin's) from
+`trace_volume` (default `pixels_median_dff_20s_full.npy`). `b` cycles the
+background: time-mean raw GCaMP, temporal SD, Pearson r of every pixel with the
+selected box, or one frame (drag the line in the trace panel). Boxes can be moved,
+resized, added (double-click / `i`), deleted and renamed; mirror lock keeps L/R
+pairs exact. Names must end their prefix in `L`/`R` (`S1L`, `M2R_alta`), the
+detectors' hemisphere rule. Bregma is fixed: the pixels were cropped around it.
+
+Input: `pixel_data/<day>_<animal>/<t#>/pixels_meta_full.npz`,
+`pixels_f_gcamp_full.npy` and the trace volume; each page starts from
+`roi_sets/pixel_selected/<key>.yaml` if saved before, else `seed_dir`, else the
+dump's own `roi_sets/rebuilt` set. Output: `roi_sets/pixel_selected/<day>_<animal>_<t#>.yaml`,
+the ROI-set format of `roi_editor.py` with the dump's own grid, Bregma and
+downsample. A page with a box outside the crop is not saved.
+
+`--roi-set-dir roi_sets/pixel_selected` then makes `epileptic_by_area_animal_day_pixels.py`,
+`epileptic_by_active_pixels.py` and `roi_pixel_connectivity.py` read those files
+instead of each dump's own set. A recording without a file raises (no fallback),
+and the output folder gets a `_roi_pixel_selected` suffix, so the default runs are
+not overwritten.
+
+**Select once, use on every recording.** Draw the ROIs on one recording and press
+`A`: that page becomes the template, and every recording gets the template's
+Bregma offsets scaled by `its lambda_row_offset / template lambda_row_offset`.
+Both landmarks come from that recording's own `roi_sets/rebuilt` set, i.e. from
+`roi_editor.py`. The scaling is `roi_editor.scale_boxes`: box sizes stay fixed
+unless `--lambda-scales-box-size`, and mirrored pairs stay exact. `S` saves every
+set plus `roi_sets/pixel_selected/_template.yaml`. `--apply-template <that file>`
+regenerates all sets headlessly; it checks every recording first and writes
+nothing if a scaled box would leave a crop. Measured on the cohort: transferring
+`260611_PV5_t1`'s cortex22 boxes (Lambda 49) to all 545 recordings (Lambda 42-56,
+scale 0.857-1.143x) keeps every box inside its crop and reproduces
+`roi_sets/rebuilt` within 1 px (105 identical, 440 with a 1 px rounding difference).
+
+`test_roi_mean_detection.py` is the single-recording version of
+`epileptic_by_area_animal_day.py`: it takes one `roi_fluorescence_full.csv` (set
+`csv_path` and the other parameters in the block at the top — there are no CLI
+flags), imports the cohort script's detection functions rather than copying them,
+and splits that one recording's events by area and hemisphere. Verified against
+the saved cohort run on `260611_PV5/t1`: the same 419 peaks and 220
+confirmations, every numeric column identical. The one difference is the cut-off
+— the top `calibration_frame_percent` of this recording's own frames, so counts
+are per-file; set `epileptic_z_threshold` to the cohort's `z_threshold` (3.58,
+from its `detection_config.json`) to reproduce the cohort's flags exactly.
+
+It writes into `outputs/test_roi_mean_detection/<date>_<animal>/<t#>/`:
+`roi_traces.csv` (the loaded ROIs plus three derived summary traces —
+`Cortex_mean` and the two hemisphere means, drawn and saved but never detected
+in), `roi_events.csv`, `roi_epileptic_events.csv`, `roi_event_counts.csv` (per
+ROI: area, hemisphere, counts, events per minute), `roi_event_counts_by_area.csv`
+(the same summed over the two hemispheres), and seven figures —
+`roi_activity_overview.png` (the ROI-averaged signal with its running median, the
+same trace detrended and smoothed, and the two hemispheres, with every
+epileptiform frame marked), `roi_event_raster.png` (when each ROI fired and how
+often, ordered by area — a real event crosses many rows at once),
+`roi_traces_all.png`, `roi_traces_detrended.png`, `roi_traces_events.png`,
+`roi_traces_rise.png`, and `roi_event_zooms.png` (the largest events with every
+other ROI faint behind the one that fired).
+
+`test_active_pixel_detection.py` is the single-recording version of that script:
+it takes one `pixel_data/<date>_<animal>/<t#>/` dump (set `dump_folder` and the
+other parameters in the block at the top — there are no CLI flags) and imports
+the cohort script's own `active_pixel_fraction`, so the traces cannot drift from
+it; it raises if they differ. Its one deliberate difference is the cut-off: the
+top `calibration_frame_percent` of THIS recording's frames, or the fixed
+`epileptic_z_threshold`, so its counts are not comparable across recordings.
+It also carries a third trace, `Cortex_active`, the fraction over every counted
+pixel of both hemispheres at once (taken from the pixel-by-frame boolean, not as
+the mean of the two hemisphere fractions). It is drawn and written to the CSV,
+but events are not detected in it, so the event tables stay the cohort's.
+
+It writes into `outputs/test_active_pixel_detection/<date>_<animal>/<t#>/`:
+`active_pixel_fraction.csv` (`trial`, `frame`, the two hemisphere fractions and
+the overall one), `active_pixel_events.csv`,
+`active_pixel_epileptic_events.csv`, and six figures —
+`active_pixel_maps.png` (which pixels are counted per hemisphere, and how often
+each was active, with the atlas boxes and Bregma drawn on both),
+`active_pixel_activity_overview.png` (the overall activity over the whole
+recording with its running median and the `epileptic_min_signal` gate, the same
+trace detrended and smoothed, and the two hemispheres for comparison, with the
+epileptiform peaks marked on all three),
+`active_pixel_traces_detrended.png` (one row per trace, the overall one
+included), `active_pixel_traces_events.png`, `active_pixel_traces_rise.png`, and
+`active_pixel_event_frames.png` (a zoom of the raw fraction and the map of which
+pixels were active, at the largest events).
 
 `plot_epileptic_per_animal_day.py` reads `epileptic_by_area_animal_day.csv`, sums
 `n_epileptic` over all ROIs per animal and recording day, and plots every animal
@@ -629,8 +766,27 @@ The **library holds no study knowledge** — no group name, animal, sex or day
 study script under [`experiments/`](experiments/), the *policy* layer you own and
 edit. See [experiments/README.md](experiments/README.md) and the worked example
 [`experiments/healthy_vs_disease_day4.py`](experiments/healthy_vs_disease_day4.py).
-The network-based statistic (NBS) itself is **not** re-implemented — `wfci`
-consumes an adjacency matrix; it does not compute one.
+`wfci` itself does not compute the network-based statistic (NBS). It consumes an
+adjacency matrix. The sibling package **`nbs`** (`src/nbs/`) computes one, following
+[NBS_ALGORITHM.md](NBS_ALGORITHM.md): edge-wise GLM (t / F / one-sample),
+primary threshold, components sized by extent or intensity, and a permutation null
+of the largest component that gives FWER p-values. It also handles Freedman-Lane
+nuisance covariates, exchange blocks, and exact enumeration for small designs:
+
+```python
+from nbs import fisher_z, nbs, rethreshold
+
+# matrices: (n_nodes, n_nodes, n_units) Pearson r -> Fisher z; ONE matrix per animal/session
+result = nbs(fisher_z(r_matrices), design, [0, 1], primary_threshold=3.1,
+             n_permutations=5000, seed=0, store_null_stats=True)
+for component in result.significant:
+    print(component.size, component.p_value, component.edges)
+network_figure(mask_by_adjacency(diff.matrix, result.significant[0].adjacency), labels=diff.labels)
+wider = rethreshold(result, 2.5)      # same permutations, another threshold
+```
+
+Runnable demo: `conda run --no-capture-output -n letizia python examples/nbs_synthetic_example.py`
+(synthetic 22-node data with a planted effect; output `examples/output/nbs/nbs_synthetic_components.png`).
 
 ---
 
@@ -704,11 +860,28 @@ letizia/
 ├── run_botox_batch.py        ← BOTOX manifest batch, one analysis per t# recording
 ├── scan_botox_dataset.py     ← builds manifests/botox_restani_manifest.csv
 ├── test_epileptic_detection.py   ← epileptiform detection on ONE roi_fluorescence CSV (test script)
+├── test_roi_mean_detection.py ← the cohort's detection on ONE roi_fluorescence CSV, by area (test script)
 ├── epileptic_by_area_animal_day.py ← same detection on every recording → tables by area/animal/day
 ├── plot_epileptic_per_animal_day.py ← that table → total events per animal per recording day (line plot)
 ├── epileptic_by_area_animal_day_pixels.py ← same detection, traces rebuilt from pixel_data/ (median-baseline dF/F)
 ├── cache_median_dff.py       ← per-pixel median-baseline dF/F → pixel_data/*/*/pixels_median_dff_20s_full.npy (parallel)
+├── roi_pixel_connectivity.py ← pixel_data/ dF/F → per-ROI seed-pixel correlation maps (22 × 76 × 87) per recording, animal-day and group
+├── pixel_roi_editor.py      ← GUI: pick ROIs on the pixel dumps → roi_sets/pixel_selected/ (pixel scripts: --roi-set-dir)
+├── pv_matrix_viewer.py      ← GUI: PV connectivity matrices / day differences with live colour limits → outputs/pv_matrix_viewer/
+├── parula_colormap.py       ← MATLAB's parula(256) as a matplotlib colormap
+├── plot_hemisphere_traces.py ← pixel_data/ dF/F (mean, 20 s, 60 s median baseline) → left/right hemisphere traces per recording (emo-corrected and GCaMP-only)
+├── plot_frame_montage.py ← pixel_data/ dF/F volume → filmstrip montage of frames, one panel per condition
+├── plot_frame_montages_by_animal.py ← every animal: 10 peak montages per animal, with and without GSR → outputs/frame_montages/by_animal/
+├── test_drift_vs_design.py  ← outputs/hemisphere_traces/ → per-recording drift vs design columns (mixed model, variance partition) (test script)
+├── test_nbs_change_over_time.py  ← outputs/roi_pixel_connectivity/ → NBS of ROI connectivity change over sessions, C57 R/T (test script)
+├── test_nbs_pre_post_boto.py     ← outputs/roi_pixel_connectivity/ → NBS of ROI connectivity preBoto (day 1-3) vs postBoto (day >= 4), C57 R/T (test script)
+├── test_nbs_pv_group.py          ← outputs/roi_pixel_connectivity/ → NBS of PV-group connectivity: day_index slope, and PV vs same-line (PV-CRE) R/T (test script)
+├── analyze_peak_tails.py    ← pixel_data/ 60 s median dF/F → ROI traces → find_peaks → top-5 % peak tails per recording, by group/day/ROI
+├── analyze_peak_tails_emo.py ← the same tails on F_gcamp / F_emo, with no baseline or with one high-pass, vs the dF/F run
 ├── epileptic_by_active_pixels.py ← same detection on the fraction of active pixels per hemisphere
+├── test_active_pixel_detection.py ← that detection on ONE pixel dump + the pixel maps (test script)
+├── build_epileptic_groups.py ← manifests → outputs/epileptic_groups/batch_summary.csv (day, animal, group)
+├── build_experimental_design.py ← pixel_data/ + groups → pixel_data/experimental_design.csv (one row per recording)
 ├── epileptic_diagnostics.py      ← shared per-recording figures (detrending, detections, rise, all-ROI overview)
 ├── roi_sets/                 ← ROI sets drawn with roi_editor.py (boxes + Bregma);
 │                               cortex22_roi_set.yaml = the 22 CORTEX_22 boxes, checked in
@@ -741,6 +914,12 @@ letizia/
 │   ├── cohort.py             ← generic group layer (stack/select/mean/DIFF)
 │   ├── significance.py       ← generic figures (mask by adjacency, network, bars)
 │   └── pipeline.py           ← orchestration (correction → [mask] → [GSR] → ROI → conn.)
+├── src/nbs/                  ← Network-Based Statistic (NBS_ALGORITHM.md); separate from wfci
+│   ├── glm.py                ← edge-wise GLM (t / F / one-sample), Freedman-Lane split
+│   ├── permutation.py        ← within-block permutations, sign flips, exact enumeration
+│   ├── components.py         ← supra-threshold components, extent / intensity sizes
+│   └── core.py               ← nbs(), rethreshold(), fisher_z(), NBSResult
+├── NBS_ALGORITHM.md          ← the NBS algorithm spec `src/nbs/` implements
 ├── tests/
 │   ├── test_parity.py        ← Python-vs-MATLAB numerical parity (cerebellar)
 │   ├── test_streaming.py     ← streaming vs in-memory equivalence
@@ -755,11 +934,13 @@ letizia/
 │   ├── test_gsr.py           ← vectorised OLS ≡ per-pixel lstsq
 │   ├── test_streaming_gsr.py ← streaming GSR ≡ in-memory GSR, still 2 passes
 │   ├── test_cli.py           ← --profile / --mode alias / mask rules
+│   ├── test_nbs.py           ← NBS vs scipy t/F, null FWER, planted effect, exact = MC
 │   └── matlab_reference/
 │       ├── gen_reference.m   ← generates reference.mat from sample data
 │       └── reference.mat     ← MATLAB outputs (git-ignored; regenerate)
 ├── examples/
 │   ├── run_example.py        ← end-to-end demo on sample data
+│   ├── nbs_synthetic_example.py ← NBS demo → output/nbs/nbs_synthetic_components.png
 │   ├── README.md
 │   └── output/               ← example outputs
 ├── experiments/             ← study scripts (POLICY: groups, splits, figures)
@@ -876,3 +1057,13 @@ binding (`pyside6`) for its window — both in the env specs, and available as t
   reads frame-by-frame in constant memory.
 - The original MATLAB scripts are preserved under `matlab/` (not deleted) — they
   are required to regenerate the parity reference.
+
+Cortex/emo result gallery: `conda run --no-capture-output -n letizia python plot_cortex_activity_emo.py`.
+Reads completed tables/trace archives (cohort if complete, otherwise pilot), writes
+six PNG/SVG plots, plotted-data CSVs and an HTML gallery under
+`outputs/cortex_activity_emo*/plots/60s_factor1/`. See
+[plot usage and interpretation](docs/CORTEX_ACTIVITY_EMO_USAGE.md#cortexemo-result-plots).
+
+Cortex/emo parallel resume: `conda run -n letizia python analyze_cortex_activity_emo.py --workers 2`. Completed compatible caches are reused before reading raw data. See the [run guide](docs/CORTEX_ACTIVITY_EMO_USAGE.md).
+
+To plot completed cortex/emo recordings despite QC failures: `conda run -n letizia python plot_cortex_activity_emo.py --input-root outputs/cortex_activity_emo --allow-incomplete`. Omitted recordings are explicitly reported.

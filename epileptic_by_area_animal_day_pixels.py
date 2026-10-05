@@ -23,7 +23,9 @@ twice - once per pixel before averaging, once per ROI after. That is deliberate
 here (the two act on different quantities), but set `--median-window-s` larger,
 or switch modes, if only one stage is wanted.
 
-ROI boxes: `--all-rois` takes every box of each recording's saved atlas (22 for
+ROI boxes: `--roi-set-dir DIR` replaces each dump's own ROI set with the
+per-recording `DIR/<day>_<animal>_<t#>.yaml` drawn by pixel_roi_editor.py (the
+output folder then gets a `_roi_<DIR name>` suffix). `--all-rois` takes every box of each recording's saved atlas (22 for
 cortex22). `--custom-boxes` adds the four hand-specified right motor boxes below,
 which REPLACE the atlas boxes of the same name; by default they are used only
 when --all-rois is off, because the replacements are not the mirror images of
@@ -79,9 +81,13 @@ RUN_CONFIG: dict[str, Any] = {
     # median_dff one, the per-recording tables and figures having the same names.
     "output_dir": REPO_ROOT / "outputs/epileptic_by_area_animal_day_pixels_median_dff_wide_smoothed",
     "all_rois": True,  # True: every box of each recording's atlas; False: custom only.
+    # None: each dump's own ROI set (meta roi_set). A folder: per-recording sets
+    # <day>_<animal>_<t#>.yaml drawn with pixel_roi_editor.py; output_dir then gets
+    # a _roi_<folder name> suffix so the default run is not overwritten.
+    "roi_set_dir": None,
     "custom_boxes": None,  # None: custom boxes only when all_rois is False. True/False force it.
     "signal_mode": "median_dff",  # "median_dff" or "reflectance_ratio"; see the docstring.
-    "baseline_median_window_s": 20.0,  # Per-pixel running median used as Fbar/Rbar.
+    "baseline_median_window_s": 60.0,  # Per-pixel running median used as Fbar/Rbar.
     "reference_lambda": None,  # None: fixed offsets; otherwise scale box centres.
     "debug_plot_count": None,  # None: every recording; an integer samples that many; 0 disables.
     "debug_animals_per_group": 5,  # None: every animal; otherwise this many random animals per group.
@@ -217,6 +223,44 @@ def crop_slices(box, y_1, x_2, region):
     return rs, cs
 
 
+def recording_roi_set(meta, roi_set_dir=None):
+    """The ROI set one pixel dump is analysed with: (path, parsed YAML).
+
+    `roi_set_dir=None` is the set the dump was made with (`meta["roi_set"]`).
+    Otherwise it is `<roi_set_dir>/<day>_<animal>_<t#>.yaml`, the per-recording
+    file pixel_roi_editor.py writes. A missing file raises instead of falling back
+    to the dump's own set: a silent fallback is how CLAUDE.md 9.4 ran a whole batch
+    on the wrong geometry without anything saying so.
+    The set must share the dump's grid, Bregma and downsample, because box offsets
+    are only meaningful relative to the Bregma the pixels were cropped around.
+    """
+    if roi_set_dir is None:
+        atlas_path = Path(meta["roi_set"])
+        if not atlas_path.is_absolute():
+            atlas_path = REPO_ROOT / atlas_path
+    else:
+        atlas_path = Path(roi_set_dir) / f"{meta['day']}_{meta['animal']}_{meta['recording']}.yaml"
+        if not atlas_path.is_file():
+            raise FileNotFoundError(f"No ROI set for {meta['day']}_{meta['animal']}/{meta['recording']} "
+                                    f"in {roi_set_dir}: expected {atlas_path}")
+    atlas = yaml.safe_load(atlas_path.read_text(encoding="utf-8"))
+    if list(atlas["grid"]) != list(meta["grid"]):
+        raise ValueError(f"Atlas and pixel grid differ: {atlas_path}")
+    for key in ("bregma_row", "bregma_col", "downsample"):
+        if atlas[key] != meta[key]:
+            raise ValueError(f"Atlas {key} differs from saved metadata: {atlas_path}")
+    return atlas_path, atlas
+
+
+def roi_output_suffix(roi_set_dir):
+    """Output-folder suffix for a run on overridden ROI sets ("" for the dumps' own).
+
+    The per-recording file names do not depend on the boxes, so without it a run
+    on hand-selected ROIs would overwrite the tables and figures of the default run.
+    """
+    return "" if roi_set_dir is None else f"_roi_{Path(roi_set_dir).name}"
+
+
 def use_custom_boxes(all_rois, custom_boxes):
     """`custom_boxes=None` means: only when the atlas boxes are not being used.
 
@@ -263,10 +307,12 @@ def roi_categories(labels):
 class PixelTraceLoader:
     def __init__(self, output_root, *, all_rois=False, reference_lambda=None,
                  custom_boxes=None, signal_mode="median_dff",
-                 baseline_median_window_s=20.0, sampling_rate_hz=10.0):
+                 baseline_median_window_s=20.0, sampling_rate_hz=10.0, roi_set_dir=None):
         if signal_mode not in SIGNAL_MODES:
             raise ValueError(f"signal_mode must be one of {SIGNAL_MODES}")
         self.output_root = Path(output_root)
+        # None: each dump's own ROI set; otherwise per-recording sets from this folder.
+        self.roi_set_dir = roi_set_dir
         self.all_rois = all_rois
         self.reference_lambda = reference_lambda
         self.custom_boxes = custom_boxes
@@ -304,15 +350,7 @@ class PixelTraceLoader:
             raise ValueError(f"Unsupported pixel axes in {metadata_path}")
         if meta["n_written"] != meta["n_time"] or meta["n_time"] <= 0:
             raise ValueError(f"Incomplete pixel dump: {metadata_path}")
-        atlas_path = Path(meta["roi_set"])
-        if not atlas_path.is_absolute():
-            atlas_path = REPO_ROOT / atlas_path
-        atlas = yaml.safe_load(atlas_path.read_text(encoding="utf-8"))
-        if list(atlas["grid"]) != meta["grid"]:
-            raise ValueError(f"Atlas and pixel grid differ: {atlas_path}")
-        for key in ("bregma_row", "bregma_col", "downsample"):
-            if atlas[key] != meta[key]:
-                raise ValueError(f"Atlas {key} differs from saved metadata: {atlas_path}")
+        atlas_path, atlas = recording_roi_set(meta, self.roi_set_dir)
         boxes = resolve_boxes(atlas, self.all_rois, self.reference_lambda, self.custom_boxes)
         self.categories.update(roi_categories(boxes))
         region = meta.get("region", [0, meta["grid"][0], 0, meta["grid"][1]])
@@ -359,6 +397,9 @@ def parse_args(defaults: dict[str, Any]) -> argparse.Namespace:
                         default=defaults["output_dir"])
     parser.add_argument("--all-rois", action=argparse.BooleanOptionalAction,
                         default=defaults["all_rois"], help="Use every box of each recording's saved atlas")
+    parser.add_argument("--roi-set-dir", type=Path, default=defaults["roi_set_dir"],
+                        help="Folder of per-recording ROI sets (pixel_roi_editor.py) used instead of "
+                             "each dump's own; output_dir gets a _roi_<folder> suffix")
     parser.add_argument("--custom-boxes", action=argparse.BooleanOptionalAction,
                         default=defaults["custom_boxes"],
                         help="Include the four hand-specified right motor boxes, which replace the "
@@ -406,6 +447,7 @@ def build_runtime_args(config: dict[str, Any] | None = None) -> argparse.Namespa
         input_root=Path(config["input_root"]),
         output_dir=Path(config["output_dir"]),
         all_rois=bool(config["all_rois"]),
+        roi_set_dir=config["roi_set_dir"],
         custom_boxes=config["custom_boxes"],
         signal_mode=config["signal_mode"],
         baseline_median_window_s=float(config["baseline_median_window_s"]),
@@ -430,6 +472,7 @@ def main():
         raise ValueError("debug_width_scale must be finite and positive")
     if args.signal_mode not in SIGNAL_MODES:
         raise ValueError(f"signal_mode must be one of {SIGNAL_MODES}")
+    args.output_dir = args.output_dir.with_name(args.output_dir.name + roi_output_suffix(args.roi_set_dir))
     if args.recording_limit is not None and args.recording_limit <= 0:
         raise ValueError("recording_limit must be positive")
     if args.reference_lambda is not None and (not np.isfinite(args.reference_lambda) or args.reference_lambda <= 0):
@@ -441,7 +484,8 @@ def main():
                               reference_lambda=args.reference_lambda,
                               custom_boxes=args.custom_boxes, signal_mode=args.signal_mode,
                               baseline_median_window_s=args.baseline_median_window_s,
-                              sampling_rate_hz=args.detection["sampling_rate_hz"])
+                              sampling_rate_hz=args.detection["sampling_rate_hz"],
+                              roi_set_dir=args.roi_set_dir)
     if args.signal_mode == "median_dff":
         signal_description = (f"(F/Fbar)/(R/Rbar) - 1 per saved pixel, Fbar/Rbar = centred "
                               f"{args.baseline_median_window_s:g} s running median "
@@ -449,6 +493,8 @@ def main():
     else:
         signal_description = "F * mean_time(R) / R per saved pixel; then spatial ROI mean"
     print(f"Signal: {signal_description} ({loader.signal_unit})")
+    print(f"ROI sets: {args.roi_set_dir or 'each dump own (meta roi_set)'}")
+    print(f"Output: {args.output_dir}")
     run_analysis(input_root=args.input_root, output_dir=args.output_dir,
                  recording_paths=paths, recording_limit=args.recording_limit,
                  trace_loader=loader, diagnostics_root=args.output_dir,
@@ -464,6 +510,8 @@ def main():
                                                          if args.signal_mode == "median_dff" else None),
                                  correction_grid="saved downsampled pixels",
                                  pixel_root=str(args.pixel_root.resolve()), all_rois=args.all_rois,
+                                 roi_set_dir=(None if args.roi_set_dir is None
+                                              else str(Path(args.roi_set_dir).resolve())),
                                  custom_boxes=(CUSTOM_BOXES if use_custom_boxes(
                                      args.all_rois, args.custom_boxes) else None),
                                  reference_lambda=args.reference_lambda),

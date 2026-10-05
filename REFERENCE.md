@@ -296,6 +296,36 @@ compute the network statistic (non-goal). Colours/positions are arguments.
   `COLOR_EDGE`).
 - `significance_barplot(masked, labels, sign="negative", ax=None) -> Axes`.
 
+## `src/nbs/` — Network-Based Statistic (separate package)
+Implements [NBS_ALGORITHM.md](NBS_ALGORITHM.md). Kept out of `wfci` (NBS is a
+`wfci` non-goal, MERGING_PLAN.md §4.3). A component's `adjacency` is exactly the
+input `wfci.significance.mask_by_adjacency` expects.
+- `nbs(matrices[n,n,n_obs], design[n_obs,p], contrast, *, test="t"|"F"|"one_sample",
+  primary_threshold, n_permutations=5000, alpha=0.05,
+  size_measure="extent"|"intensity"|"intensity_excess", exchange_blocks=None,
+  exact=None, seed=None, store_null_stats=False) -> NBSResult`. The t test is
+  one-sided (`c @ beta > 0`). Negate the contrast for the other tail.
+- `NBSResult`: `stat_matrix[n,n]`, `components` (largest first; `nodes`, `edges`
+  `[k,2]` with i<j, `adjacency[n,n]` bool, `size`, `p_value`), `.significant`,
+  `null_max_size[n_null]`, `exact`, `n_relabellings_possible`, and
+  `null_stats[n_null, n_edges]` when stored.
+- `rethreshold(result, t, size_measure=None)` reruns steps 2-5 on the stored
+  null. It is identical to a fresh run with the same seed.
+- `fisher_z(r)` computes arctanh off the diagonal, with the diagonal set to 0.
+  It raises when |r| >= 1. `upper_triangle(m)` returns `Y[n_obs, n_edges]`, rows, cols.
+- Design partition: nuisance = `X @ null_space(C)`, so the FL result does not
+  depend on how the design is coded. A permuted sample is
+  `fit_nuis + resid[perm]`. When the nuisance is at most the intercept, that
+  equals `P @ Y`, and only then is exact enumeration allowed. The count is the
+  per-block multinomial of the distinct design rows, e.g. C(n1+n2, n1) for two
+  groups. It is used automatically when it is <= `n_permutations`.
+- p-value: Monte Carlo gives `(1 + #{max >= s}) / (1 + n)`. Exact gives
+  `#{max >= s} / count`, because the observed labelling is one of the enumerated ones.
+- Constant edges get statistic 0: residual variance below 1e-20 of the edge's
+  mean square is treated as 0, otherwise roundoff gives a spurious t. Edges that
+  are zero in every observation are not tested.
+- Tests: `tests/test_nbs.py` (the spec's validation checklist).
+
 ## MATLAB ↔ Python variable map
 
 | MATLAB | Python | Shape |
@@ -381,7 +411,7 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
 - CLI/editor: `run_pipeline.py` (`RUN_CONFIG` block + argparse override). Two
   orthogonal knobs: `--source {stack_file,frame_folder,interleaved_folder}` and
   `--streaming/--no-streaming` (any source × either memory strategy).
-- Example: `examples/run_example.py`.
+- Example: `examples/run_example.py`; NBS demo `examples/nbs_synthetic_example.py`.
 - Benchmark: `benchmarks/benchmark_modalities.py` (`RUN_CONFIG` block + argparse).
 - Study scripts (root, `RUN_CONFIG` block + argparse): `scan_botox_dataset.py`
   (dataset → `manifests/*.csv`), `run_intermingle_rs.py` (interleaved folders:
@@ -395,6 +425,11 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   `outputs/botox_restani_rebuilt`; one dataset-calibrated z cut-off; tables by
   area/animal/day in `outputs/epileptic_by_area_animal_day/`). The second carries
   copies of the first's detection functions, because a flat script runs on import.
+  `test_roi_mean_detection.py` is the newer single-recording script for the same
+  detector: it IMPORTS those functions from the cohort module instead of copying
+  them (so it cannot drift), adds the per-area/hemisphere counts, an activity
+  overview and an event raster, and differs only in taking its cut-off from the
+  one recording's own frames unless `epileptic_z_threshold` is set.
   `plot_epileptic_per_animal_day.py` reads the second's long table and plots total
   events per animal per recording day, one line per animal coloured by group.
   `epileptic_by_area_animal_day_pixels.py` reuses the second's `run_analysis` with
@@ -409,6 +444,62 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   reads that cache (or `pixels_dff_full.npy` with `--dff-source pipeline_dff`) and
   returns, per hemisphere, the fraction of atlas-box pixels above a per-pixel
   robust-z threshold.
+  `roi_pixel_connectivity.py` correlates each recording's 22 ROI box-mean traces
+  with every pixel of `pixels_dff_full.npy` (seed-pixel maps, `[n_roi, rows, cols]`,
+  einsum without BLAS), then Fisher-z averages per animal-day and group into
+  `outputs/roi_pixel_connectivity/<volume stem>/`. `--gsr` regresses the
+  ROI-union global signal out of every pixel first (`regress_global_signal`,
+  closed-form OLS as in `wfci.gsr`) into `<volume stem>_gsr/`. The three
+  `test_nbs_*.py` scripts read the folder named by `NBS_CONNECTIVITY_VARIANT`.
+  `pixel_roi_editor.py` is the post-dump ROI editor (pyqtgraph; Qt imported only
+  in `PixelROIEditor._build_ui`). Pages are `Page` objects (lazy `load`: saved set
+  in `out_dir` > `seed_dir` > the dump's `meta['roi_set']`); the crop image is
+  placed at its full-grid rect, so `roi_editor.pixel_bounds`/`box_from_pixels`
+  apply unchanged. Traces are `box_trace` (nanmean over `crop_slices`), the seed
+  map `seed_r_map` (einsum Pearson, cached centred pixels). `save_page_roi_set`
+  writes `roi_editor.save_roi_set` YAML with the dump's grid/Bregma/downsample and
+  refuses boxes outside the crop. The three pixel scripts resolve boxes through
+  `epileptic_by_area_animal_day_pixels.recording_roi_set(meta, roi_set_dir)`:
+  `None` is the dump's own set, a folder means `<dir>/<day>_<animal>_<t#>.yaml`
+  (missing file raises; grid, Bregma and downsample must match the dump), and
+  `roi_output_suffix` appends `_roi_<dir name>` to their output folder.
+  One selection for all recordings: `dump_lambda(meta)` reads `lambda_row_offset`
+  from the dump's own set; `transfer_boxes(boxes, source_lambda, target_lambda,
+  scale_size)` = `roi_editor.scale_boxes(boxes, target/source)`; `save_template` /
+  `load_template` write/read `<out_dir>/_template.yaml` (boxes + the Lambda they
+  were drawn at); `apply_template` checks every recording's crop before writing
+  any set. The GUI's `A`/`a` and `--apply-template` both go through these.
+  `plot_hemisphere_traces.py` reads `pixels_dff_full.npy` and the 20 s / 60 s
+  median caches and plots, per recording, the mean over all crop pixels left and
+  right of the midline (crop column `x_2 - 1 - region[2]`, ±3 px dropped) into
+  `outputs/hemisphere_traces/<date>_<animal>/<t#>/`. A second figure,
+  `hemisphere_traces_gcamp_only.png`, repeats the three baselines on
+  `pixels_f_gcamp_full.npy` without the reflectance term (per-pixel running medians
+  via `epileptic_by_area_animal_day_pixels.running_median`).
+  `analyze_peak_tails.py` reads the 60 s median cache for every row of
+  `pixel_data/experimental_design.csv`, averages it inside the 22 atlas boxes
+  (`resolve_boxes(all_rois=True)` + `crop_slices`), adds the all-ROI and per-hemisphere
+  means, and runs `find_peaks(prominence=0.1 % dF/F)` from 20 s on. The top 5 % of each
+  trace's peaks is the tail; metrics in % dF/F and robust z. Writes
+  `outputs/peak_tails_60s/` (`roi_traces.npz` (n_recordings, n_frames, n_traces),
+  `tail_summary.csv`, `tail_peaks.csv`, aggregates, ranking, `config.json`, figures).
+  `analyze_peak_tails_emo.py` is the same analysis on a different signal: the per-pixel
+  `F_gcamp / F_emo` ratio (raw dumps) averaged over the same boxes, with `signal_mode`
+  choosing the baseline — `"raw"` divides by the recording's own median ratio (no trend
+  removed), `"detrended"` by the trace's own `detrend_window_s` running median (one
+  high-pass). `*_pct` is percent of that baseline rather than percent dF/F. It adds
+  `drift_ptp_pct`/`drift_ptp_z` (the span of the trace's 60 s running median: the trend in
+  `"raw"`, the residual in `"detrended"`), `tail_time_course.png`, and a
+  `tail_vs_<run>.{csv,png}` per entry of `reference_runs`. Each mode writes its own output
+  folder. The ratio traces do not depend on the mode, so both read and write one cache,
+  `outputs/peak_tails_emo_ratio/roi_traces.npz` (raw ratios, float32).
+  `test_active_pixel_detection.py` is the single-dump version of that last one: it
+  imports the cohort script's `hemisphere_masks`/`pixel_scales`/`active_pixel_fraction`
+  (and the detection functions of `epileptic_by_area_animal_day`) instead of copying
+  them, checks its own per-pixel computation against `active_pixel_fraction`, and adds
+  the maps the cohort run does not draw (pixels counted per hemisphere, per-pixel
+  active rate, active map at the largest events). Its cut-off is this recording's own
+  frame percentile, so its counts are per-file only.
   `epileptic_diagnostics.py` holds the per-recording figures all of them share.
 - ROI geometry utility: `roi_editor.py` — interactive placement of the ROI boxes and
   the two landmarks on the first image of each recording (rendered on the final
@@ -439,3 +530,29 @@ cross-checks against MATLAB. Writes `outputs/modality_comparison.txt`.
   `--roi-set` (one file) or `--roi-set-dir` (per `<day>_<animal>`), applied with
   `run_intermingle_rs.apply_roi_set`, which `dataclasses.replace`s the profile's
   atlas. See `docs/ROI_EDITOR.md`.
+
+## Cortex activity / emo additive analysis
+
+- `analyze_cortex_activity_emo.py`: import-safe study runner and numerical helpers;
+  reads raw `pixel_data` volumes plus design/metadata/ROI YAML. Full-recording
+  per-pixel additive median, valid-window propagation, unique ROI union, regional
+  and merged cortical intervals, 30 s exposure tables, 20/60/120 s sensitivity.
+- `compare_cortex_activity_conditions.py`: table-only animal/day aggregation,
+  Poisson/fractional-logit GEE, NB sensitivity and animal bootstrap contrasts.
+- `test_cortex_activity_emo.py`: procedural balanced pilot, separate output root.
+- `tests/test_cortex_activity_emo.py`: synthetic signal/event/exposure/model checks.
+- `examples/cortex_activity_emo_pilot.json`: reproducible three-recording selection.
+- Outputs: `outputs/cortex_activity_emo/` and `outputs/cortex_activity_emo_pilot/`;
+  per-recording fingerprinted caches, aggregate tables and completion manifests.
+- [Exact commands, schema and limitations](docs/CORTEX_ACTIVITY_EMO_USAGE.md).
+  No `wfci` API change; all inference remains study-specific.
+
+Cortex/emo result gallery: `conda run --no-capture-output -n letizia python plot_cortex_activity_emo.py`.
+Reads completed tables/trace archives (cohort if complete, otherwise pilot), writes
+six PNG/SVG plots, plotted-data CSVs and an HTML gallery under
+`outputs/cortex_activity_emo*/plots/60s_factor1/`. See
+[plot usage and interpretation](docs/CORTEX_ACTIVITY_EMO_USAGE.md#cortexemo-result-plots).
+
+Cortex/emo runner: spawn-based per-recording process pool (`--workers 2`), metadata-only cache validation, single-parent aggregation and per-recording failure reports; see docs/CORTEX_ACTIVITY_EMO_USAGE.md.
+
+`plot_cortex_activity_emo.py --allow-incomplete` reads provenance-validated per-recording caches and reports omissions without creating a cohort completion marker.

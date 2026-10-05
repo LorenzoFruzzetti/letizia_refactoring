@@ -39,7 +39,7 @@ from pathlib import Path
 import numpy as np
 
 from .config import ROIConfig
-from .gsr import GSRConfig
+from .gsr import GSRConfig, spatial_mean
 from .io import FrameSource, tiff_frame_source
 from .mask import valid_from_mask
 from .profiles import Profile
@@ -315,7 +315,9 @@ def _stream_pass2_gsr(
                 f"The global signal is undefined at frame {idx}: it has no valid "
                 f"pixels at all. Check the brain mask and the input data."
             )
-        g_t = float(clean.sum()) / n_finite    # the global signal, frame t
+        # The global signal of frame t, averaged as gsr.global_mean says
+        # ("column" = MATLAB's nested nanmean), exactly as wfci.gsr.global_signal.
+        g_t = float(spatial_mean(dff_q, ~bad, gsr.global_mean))
         g_vec[idx] = g_t
 
         with warnings.catch_warnings():

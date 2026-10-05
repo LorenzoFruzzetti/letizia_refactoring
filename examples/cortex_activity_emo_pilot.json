@@ -1,0 +1,7 @@
+{
+  "output_root": "outputs/cortex_activity_emo_pilot",
+  "recording_ids": ["260618_PV3_t1", "260611_R1_t1", "260709_T10_t1"],
+  "baseline_windows_s": [60.0, 20.0, 120.0],
+  "pixel_threshold": 0.01,
+  "threshold_factors": [0.5, 1.0, 2.0]
+}

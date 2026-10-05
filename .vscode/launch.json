@@ -1,0 +1,35 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Cortex emo: balanced pilot",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/test_cortex_activity_emo.py",
+      "python": "${env:USERPROFILE}/miniconda3/envs/letizia/python.exe",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env/.envVariables",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Cortex emo: cohort",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/analyze_cortex_activity_emo.py",
+      "python": "${env:USERPROFILE}/miniconda3/envs/letizia/python.exe",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env/.envVariables",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Cortex emo: condition comparisons",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/compare_cortex_activity_conditions.py",
+      "python": "${env:USERPROFILE}/miniconda3/envs/letizia/python.exe",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env/.envVariables",
+      "console": "integratedTerminal"
+    }
+  ]
+}

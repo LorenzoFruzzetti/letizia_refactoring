@@ -185,7 +185,7 @@ RUN_CONFIG: dict[str, Any] = {
     # reference: the atlas as shipped is declared to be drawn at this distance, and
     # dragging Lambda to D rescales every box by D / this. Only the starting value
     # lives here; a ROI set that carries lambda_row_offset overrides it.
-    "lambda_offset": 55,
+    "lambda_offset": 40,
     # Whether rescaling also scales each box's SIZE, or only its position.
     # False (default) keeps every box the size it was drawn -- so the same number of
     # pixels is averaged for every animal, and per-ROI noise stays comparable across

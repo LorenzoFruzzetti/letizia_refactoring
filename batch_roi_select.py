@@ -57,7 +57,10 @@ from wfci import get_profile
 # ---------------------------------------------------------------------------
 RUN_CONFIG: dict[str, Any] = {
     # Root folder: every subfolder that holds at least 2 TIFFs becomes one page.
-    "folder": r"D:\WF_2026\starting",
+    # 260520 PV3 only: WF_2026_new\260520\PV3 is a junction to E:\pv3, so page keys come
+    # out as 260520_PV3_t#. Pointing at the animal folder keeps 260520 PV4 and 260608 PV5
+    # out of the editor. The full cohort root is D:\WF_2026\starting.
+    "folder": r"C:\Users\loren\Downloads\WF_2026_new\260520\PV3",
     "pattern": "*.tif",
     # Profile whose atlas is the starting box layout and whose downsample chain
     # sets the preview grid.  Must match the profile used in run_intermingle_rs.py.
@@ -95,7 +98,9 @@ RUN_CONFIG: dict[str, Any] = {
     # page, so editing continues from where it left off.
     "load_existing": True,
     # Seed EVERY page from this one file instead of the profile atlas.  None = atlas.
-    "start_from": None,
+    # 260520 PV3 has no set yet: start from PV3's first known session (260618), so
+    # Bregma 100/132 and Lambda 50 are a near guess rather than the 121/134 fallback.
+    "start_from": r"roi_sets/rebuilt/260618_PV3_t1.yaml",
     "prefer_cli_args": True,
 }
 
